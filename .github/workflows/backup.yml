@@ -1,0 +1,48 @@
+name: Database Backup
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Configure kubectl
+      uses: azure/setup-kubectl@v3
+    
+    - name: Setup kubectl context
+      run: |
+        echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig
+        export KUBECONFIG=./kubeconfig
+    
+    - name: Backup platform namespace database
+      run: |
+        export KUBECONFIG=./kubeconfig
+        ./scripts/backup-db.sh platform
+    
+    - name: Backup analytics namespace database
+      run: |
+        export KUBECONFIG=./kubeconfig
+        ./scripts/backup-db.sh analytics
+    
+    - name: Backup data namespace database
+      run: |
+        export KUBECONFIG=./kubeconfig
+        ./scripts/backup-db.sh data
+    
+    - name: Upload backups to S3
+      if: success()
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+      run: |
+        # This would upload backups to S3
+        # aws s3 sync /backups s3://your-backup-bucket/database-backups/$(date +%Y/%m/%d)/
+        echo "Backup upload to S3 would happen here"
+

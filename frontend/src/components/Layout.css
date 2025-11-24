@@ -1,0 +1,51 @@
+.layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  background: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 15px 0;
+}
+
+.header-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header h1 {
+  font-size: 24px;
+  color: #333;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.tenant-name {
+  padding: 5px 10px;
+  background: #e3f2fd;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #1976d2;
+}
+
+.user-email {
+  font-size: 14px;
+  color: #666;
+}
+
+.main-content {
+  flex: 1;
+  padding: 20px;
+}
+

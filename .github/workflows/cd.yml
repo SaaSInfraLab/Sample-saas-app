@@ -1,0 +1,190 @@
+name: CD - Build, Push, and Deploy
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Namespace to deploy to'
+        required: true
+        default: 'platform'
+        type: choice
+        options:
+          - platform
+          - analytics
+          - data
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    outputs:
+      backend-image: ${{ steps.meta-backend.outputs.tags }}
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
+      image-tag: ${{ steps.meta-backend.outputs.version }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Get ECR registry from Terraform outputs
+      id: ecr-registry
+      run: |
+        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
+        terraform init -backend-config=backend-dev.tfbackend
+        ECR_REGISTRY=$(terraform output -raw ecr_registry_id 2>/dev/null || terraform output -json | jq -r '.ecr_registry_id.value // empty')
+        if [ -z "$ECR_REGISTRY" ]; then
+          # Fallback: extract from backend repo URL
+          BACKEND_REPO=$(terraform output -raw ecr_backend_repository_url)
+          ECR_REGISTRY=$(echo $BACKEND_REPO | cut -d'/' -f1)
+        fi
+        echo "registry_id=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+        echo "ECR Registry: $ECR_REGISTRY"
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Extract metadata for backend
+      id: meta-backend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push backend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        file: ./backend/Dockerfile
+        push: true
+        tags: ${{ steps.meta-backend.outputs.tags }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Extract metadata for frontend
+      id: meta-frontend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push frontend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        file: ./frontend/Dockerfile
+        push: true
+        tags: ${{ steps.meta-frontend.outputs.tags }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to EKS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    strategy:
+      matrix:
+        namespace: [platform, analytics, data]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Configure kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+    
+    - name: Get EKS cluster name from Terraform
+      id: eks-cluster
+      run: |
+        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
+        terraform init -backend-config=backend-dev.tfbackend
+        CLUSTER_NAME=$(terraform output -raw cluster_name)
+        echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+    
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
+    
+    - name: Get ECR repository URLs from Terraform
+      id: ecr-repos
+      run: |
+        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
+        terraform init -backend-config=backend-dev.tfbackend
+        BACKEND_REPO=$(terraform output -raw ecr_backend_repository_url)
+        FRONTEND_REPO=$(terraform output -raw ecr_frontend_repository_url)
+        echo "backend_repo=$BACKEND_REPO" >> $GITHUB_OUTPUT
+        echo "frontend_repo=$FRONTEND_REPO" >> $GITHUB_OUTPUT
+    
+    - name: Update Kubernetes manifests with image tags
+      run: |
+        IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+        if [ -z "$IMAGE_TAG" ]; then
+          IMAGE_TAG="latest"
+        fi
+        
+        BACKEND_IMAGE="${{ steps.ecr-repos.outputs.backend_repo }}:$IMAGE_TAG"
+        FRONTEND_IMAGE="${{ steps.ecr-repos.outputs.frontend_repo }}:$IMAGE_TAG"
+        
+        # Update backend deployment
+        find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|your-registry/task-management-backend:latest|$BACKEND_IMAGE|g" {} \;
+        
+        # Update frontend deployment
+        find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|your-registry/task-management-frontend:latest|$FRONTEND_IMAGE|g" {} \;
+    
+    - name: Deploy to ${{ matrix.namespace }} namespace
+      run: |
+        kubectl apply -k k8s/namespace-${{ matrix.namespace }}
+        kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m || true
+        kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m || true
+    
+    - name: Verify deployment
+      run: |
+        echo "=== Pods in ${{ matrix.namespace }} namespace ==="
+        kubectl get pods -n ${{ matrix.namespace }}
+        echo ""
+        echo "=== Services in ${{ matrix.namespace }} namespace ==="
+        kubectl get services -n ${{ matrix.namespace }}

@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-metrics
+  namespace: platform
+  labels:
+    app: backend
+    tenant: platform
+spec:
+  selector:
+    matchLabels:
+      app: backend
+      tenant: platform
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+

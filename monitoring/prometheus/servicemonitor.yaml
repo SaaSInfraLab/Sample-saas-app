@@ -1,0 +1,22 @@
+# ServiceMonitor for Prometheus Operator
+# This is a template - actual ServiceMonitors are in each namespace
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-metrics
+  namespace: <NAMESPACE>
+  labels:
+    app: backend
+    tenant: <TENANT>
+spec:
+  selector:
+    matchLabels:
+      app: backend
+      tenant: <TENANT>
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+
