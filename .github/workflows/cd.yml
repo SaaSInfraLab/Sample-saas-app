@@ -50,7 +50,6 @@ jobs:
     name: Build and Push Docker Images
     needs: [check-ci-status]
     runs-on: ubuntu-latest
-    if: needs.check-ci-status.result == 'success'
     permissions:
       id-token: write
       contents: read
