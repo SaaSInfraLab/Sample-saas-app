@@ -4,6 +4,7 @@ kind: Kustomization
 namespace: data
 
 resources:
+  - namespace.yaml
   - postgresql-deployment.yaml
   - backend-deployment.yaml
   - frontend-deployment.yaml
