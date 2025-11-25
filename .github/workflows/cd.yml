@@ -8,8 +8,8 @@ on:
     branches:
       - main
   push:
-  tags:
-    - 'v*'
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       namespace:
