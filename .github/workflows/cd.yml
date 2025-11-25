@@ -7,9 +7,11 @@ on:
       - completed
     branches:
       - main
+
   push:
     tags:
       - 'v*'
+      
   workflow_dispatch:
     inputs:
       namespace:
@@ -138,6 +140,7 @@ jobs:
       contents: read
     
     strategy:
+      fail-fast: false
       matrix:
         namespace: [platform, analytics, data]
     
@@ -171,6 +174,15 @@ jobs:
     - name: Update kubeconfig
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
+
+    - name: Skip ServiceMonitor if CRD missing
+      run: |
+        if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+          echo "ServiceMonitor CRD present - keeping manifest"
+        else
+          echo "ServiceMonitor CRD not found - removing manifest for namespace ${{ matrix.namespace }}"
+          find k8s/namespace-${{ matrix.namespace }} -name "servicemonitor.yaml" -exec rm -f {} \;
+        fi
     
     - name: Get ECR repository URLs
       id: ecr-repos
