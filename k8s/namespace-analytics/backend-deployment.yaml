@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: backend
-        image: your-registry/task-management-backend:latest
+        image: task-management-backend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 3000

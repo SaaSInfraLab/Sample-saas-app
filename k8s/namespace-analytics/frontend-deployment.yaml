@@ -20,14 +20,14 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: your-registry/task-management-frontend:latest
+        image: task-management-frontend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 80
           name: http
         env:
         - name: VITE_API_URL
-          value: "http://backend-service:3000"
+          value: "http://backend-service.analytics.svc.cluster.local:3000"
         resources:
           requests:
             cpu: "50m"

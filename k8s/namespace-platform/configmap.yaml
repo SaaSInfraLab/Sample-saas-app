@@ -30,7 +30,6 @@ data:
     -- Create tenant schemas
     CREATE SCHEMA IF NOT EXISTS tenant_platform;
     CREATE SCHEMA IF NOT EXISTS tenant_analytics;
-    CREATE SCHEMA IF NOT EXISTS tenant_data;
     
     -- Create tenant metadata table
     CREATE TABLE IF NOT EXISTS tenants (
@@ -44,8 +43,7 @@ data:
     
     INSERT INTO tenants (tenant_id, name, namespace) VALUES
         ('platform', 'Platform Team', 'platform'),
-        ('analytics', 'Analytics Team', 'analytics'),
-        ('data', 'Data Team', 'data')
+        ('analytics', 'Analytics Team', 'analytics')
     ON CONFLICT (tenant_id) DO NOTHING;
   
   002_create_users.sql: |
@@ -70,7 +68,6 @@ data:
     
     SELECT create_users_table('tenant_platform');
     SELECT create_users_table('tenant_analytics');
-    SELECT create_users_table('tenant_data');
     DROP FUNCTION IF EXISTS create_users_table(TEXT);
   
   003_create_tasks.sql: |
@@ -98,6 +95,5 @@ data:
     
     SELECT create_tasks_table('tenant_platform');
     SELECT create_tasks_table('tenant_analytics');
-    SELECT create_tasks_table('tenant_data');
     DROP FUNCTION IF EXISTS create_tasks_table(TEXT);
 

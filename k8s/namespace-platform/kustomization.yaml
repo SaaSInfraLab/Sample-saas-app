@@ -12,6 +12,14 @@ resources:
   - secret.yaml
   - servicemonitor.yaml
 
+images:
+  - name: task-management-backend
+    newName: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-backend
+    newTag: latest
+  - name: task-management-frontend
+    newName: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-frontend
+    newTag: latest
+
 commonLabels:
   tenant: platform
   managed-by: terraform
