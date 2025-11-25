@@ -181,7 +181,14 @@ jobs:
           echo "ServiceMonitor CRD present - keeping manifest"
         else
           echo "ServiceMonitor CRD not found - removing manifest for namespace ${{ matrix.namespace }}"
+          # Remove the manifest file if it exists
           find k8s/namespace-${{ matrix.namespace }} -name "servicemonitor.yaml" -exec rm -f {} \;
+          # Remove references from kustomization.yaml to avoid kustomize errors
+          if command -v yq >/dev/null 2>&1; then
+            yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml
+          else
+            sed -i '/servicemonitor.yaml/d' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml
+          fi
         fi
     
     - name: Get ECR repository URLs
