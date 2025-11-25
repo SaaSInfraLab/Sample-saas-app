@@ -182,7 +182,7 @@ kubectl port-forward -n platform service/frontend-service 8080:80
 ### Workflow Fails at "Deploy to EKS"
 - Verify kubectl can access cluster
 - Check cluster name matches Terraform output
-- Ensure namespaces exist (platform, analytics, data)
+- Ensure namespaces exist (platform, analytics; data is optional)
 
 ### Images Not Updating
 - Check image tags in deployment manifests

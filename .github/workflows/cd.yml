@@ -22,7 +22,8 @@ on:
         options:
           - platform
           - analytics
-          - data
+          # Note: 'data' namespace exists but not deployed by default
+          # Add it to the matrix above to deploy all 3 namespaces
 
 env:
   AWS_REGION: us-east-1
@@ -141,7 +142,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        namespace: [platform, analytics, data]
+        # Deploy to 2 namespaces by default (fits on 2 t3.micro nodes)
+        # To deploy to 3 namespaces, add 'data' to the list and scale nodes to 3
+        namespace: [platform, analytics]
     
     steps:
     - name: Checkout code

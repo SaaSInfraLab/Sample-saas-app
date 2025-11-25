@@ -50,8 +50,11 @@ If you need to deploy manually:
 # Update image URLs in k8s manifests first, then:
 kubectl apply -k k8s/namespace-platform
 kubectl apply -k k8s/namespace-analytics
+# Optional: Deploy to third namespace (requires 3 nodes)
 kubectl apply -k k8s/namespace-data
 ```
+
+**Note**: By default, CI/CD deploys to 2 namespaces (platform, analytics) to fit on 2 t3.micro nodes. The `data` namespace is available for demonstration of 3-tenant multi-tenancy when you have 3+ nodes.
 
 ### Access Application
 
@@ -96,12 +99,14 @@ docker-compose up -d postgres
 
 ## Multi-Tenant Demo
 
-1. **Deploy to Multiple Namespaces**: Deploy the app to platform, analytics, and data namespaces
+1. **Deploy to Multiple Namespaces**: Deploy the app to 2-3 namespaces (platform, analytics, and optionally data)
 2. **Create Users**: Register users in different tenants
 3. **Verify Isolation**: 
    - Users in platform tenant cannot see tasks from analytics tenant
    - Network policies prevent cross-namespace communication
    - Resource quotas are enforced per namespace
+
+**Default Setup**: CI/CD deploys to 2 namespaces (platform, analytics) to minimize costs on t3.micro nodes. To demonstrate 3-tenant multi-tenancy, add the `data` namespace to the CD workflow matrix and scale nodes to 3.
 
 ## API Endpoints
 

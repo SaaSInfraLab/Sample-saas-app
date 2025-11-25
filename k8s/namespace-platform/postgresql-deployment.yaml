@@ -48,11 +48,11 @@ spec:
           mountPath: /docker-entrypoint-initdb.d
         resources:
           requests:
-            cpu: "100m"
-            memory: "256Mi"
+            cpu: "50m"
+            memory: "128Mi"
           limits:
-            cpu: "500m"
-            memory: "1Gi"
+            cpu: "200m"
+            memory: "256Mi"
         livenessProbe:
           exec:
             command:
@@ -78,10 +78,10 @@ spec:
       name: postgresql-data
     spec:
       accessModes: [ "ReadWriteOnce" ]
-      storageClassName: gp3
+      storageClassName: gp2
       resources:
         requests:
-          storage: 20Gi
+          storage: 2Gi
 
 ---
 apiVersion: v1
