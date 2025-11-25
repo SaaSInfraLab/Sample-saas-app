@@ -175,6 +175,10 @@ jobs:
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
 
+    - name: Export kubeconfig path
+      run: |
+        echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
     - name: Skip ServiceMonitor if CRD missing
       run: |
         if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
