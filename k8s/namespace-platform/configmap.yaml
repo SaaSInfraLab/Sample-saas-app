@@ -4,7 +4,7 @@ metadata:
   name: backend-config
   namespace: platform
 data:
-  db-host: ""  # Set to RDS endpoint from Terraform output: terraform output -raw rds_address
+  db-host: "saas-infra-lab-dev-postgres.c0ruyeiq4fej.us-east-1.rds.amazonaws.com"
   db-port: "5432"
   db-name: "taskdb"
   db-pool-min: "2"
