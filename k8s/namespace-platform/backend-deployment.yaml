@@ -33,9 +33,15 @@ spec:
         - name: PORT
           value: "3000"
         - name: DB_HOST
-          value: "postgresql-service"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: db-host
         - name: DB_PORT
-          value: "5432"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: db-port
         - name: DB_NAME
           valueFrom:
             configMapKeyRef:
