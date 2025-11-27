@@ -5,6 +5,7 @@ namespace: platform
 
 resources:
   - namespace.yaml
+  - aws-secrets-manager.yaml
   - backend-deployment.yaml
   - frontend-deployment.yaml
   - configmap.yaml

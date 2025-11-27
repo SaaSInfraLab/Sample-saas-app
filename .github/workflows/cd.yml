@@ -197,6 +197,40 @@ jobs:
           fi
         fi
     
+    - name: Get RDS Secret ARN and AWS Account ID
+      run: |
+        # Get the RDS secret ARN from the Terraform state
+        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
+        terraform init -input=false
+        RDS_SECRET_ARN=$(terraform output -raw rds_secret_arn)
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
+        echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+        cd -  # Go back to the original directory
+        
+        # Update the aws-secrets-manager.yaml with the secret ARN and AWS account ID
+        sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+        sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+
+    - name: Install AWS Secrets Manager CSI Driver
+      if: matrix.namespace == 'platform'  # Only install once for the platform namespace
+      run: |
+        # Install the AWS Secrets Manager CSI Driver
+        kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
+        
+        # Wait for the pods to be ready
+        kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=120s
+        kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=secrets-store-csi-driver --timeout=120s
+
+    - name: Deploy Secrets Manager Configuration
+      if: matrix.namespace == 'platform'  # Only deploy once for the platform namespace
+      run: |
+        # Create the secret provider class
+        kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+        
+        # Wait for the secret to be available
+        kubectl -n ${{ matrix.namespace }} wait --for=condition=ready secret db-credentials --timeout=120s
+
     - name: Get ECR repository URLs
       id: ecr-repos
       run: |

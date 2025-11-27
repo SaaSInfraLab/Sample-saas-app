@@ -25,7 +25,6 @@ $$ LANGUAGE plpgsql;
 -- Create users table in each tenant schema
 SELECT create_users_table('tenant_platform');
 SELECT create_users_table('tenant_analytics');
-SELECT create_users_table('tenant_data');
 
 -- Drop the helper function
 DROP FUNCTION IF EXISTS create_users_table(TEXT);

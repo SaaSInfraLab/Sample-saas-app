@@ -29,7 +29,6 @@ $$ LANGUAGE plpgsql;
 -- Create tasks table in each tenant schema
 SELECT create_tasks_table('tenant_platform');
 SELECT create_tasks_table('tenant_analytics');
-SELECT create_tasks_table('tenant_data');
 
 -- Drop the helper function
 DROP FUNCTION IF EXISTS create_tasks_table(TEXT);
