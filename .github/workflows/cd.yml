@@ -232,7 +232,7 @@ jobs:
         # Update the aws-secrets-manager.yaml with the secret ARN and AWS account ID
         sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
         sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
-
+        
     - name: Install AWS Secrets Manager CSI Driver
       if: matrix.namespace == 'platform'  # Only install once for the platform namespace
       run: |
