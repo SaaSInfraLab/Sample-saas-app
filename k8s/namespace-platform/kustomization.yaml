@@ -18,7 +18,3 @@ images:
     newName: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-frontend
     newTag: latest
 
-labels:
-  tenant: platform
-  managed-by: terraform
-
