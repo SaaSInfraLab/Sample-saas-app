@@ -236,6 +236,19 @@ jobs:
     - name: Install AWS Secrets Manager CSI Driver
       if: matrix.namespace == 'platform'  # Only install once for the platform namespace
       run: |
+        # Check if CRD is already installed
+        if kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io >/dev/null 2>&1; then
+          echo "CSI Secrets Store CRD already installed"
+        else
+          echo "Installing CSI Secrets Store Driver CRDs..."
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/crds/secrets-store.csi.x-k8s.io_secretproviderclasses.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/crds/secrets-store.csi.x-k8s.io_secretproviderclasspodstatuses.yaml
+        fi
+        
+        # Wait for CRD to be ready
+        echo "Waiting for SecretProviderClass CRD to be ready..."
+        kubectl wait --for condition=established --timeout=60s crd/secretproviderclasses.secrets-store.csi.x-k8s.io || true
+        
         # Check if CSI driver is already installed
         if kubectl get daemonset -n kube-system csi-secrets-store-csi-driver >/dev/null 2>&1; then
           echo "CSI Secrets Store Driver already installed"
@@ -260,16 +273,44 @@ jobs:
         
         # Verify installation
         echo "Verifying installation..."
+        kubectl get crd | grep secrets-store || true
         kubectl get pods -n kube-system | grep -E "(csi-secrets-store|secrets-store-provider-aws)" || true
 
     - name: Deploy Secrets Manager Configuration
       if: matrix.namespace == 'platform'  # Only deploy once for the platform namespace
       run: |
+        # Ensure CRD is ready before applying SecretProviderClass
+        echo "Checking SecretProviderClass CRD..."
+        kubectl wait --for condition=established --timeout=60s crd/secretproviderclasses.secrets-store.csi.x-k8s.io || {
+          echo "Error: SecretProviderClass CRD not available"
+          kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io
+          exit 1
+        }
+        
         # Create the secret provider class
+        echo "Applying SecretProviderClass..."
         kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
         
-        # Wait for the secret to be available
-        kubectl -n ${{ matrix.namespace }} wait --for=condition=ready secret db-credentials --timeout=120s
+        # Wait for the secret to be available (may take a few seconds for CSI to sync)
+        echo "Waiting for secret to be available..."
+        for i in {1..30}; do
+          if kubectl get secret -n ${{ matrix.namespace }} db-credentials >/dev/null 2>&1; then
+            echo "Secret db-credentials is available"
+            break
+          fi
+          echo "Waiting for secret... ($i/30)"
+          sleep 2
+        done
+        
+        # Verify secret exists
+        if ! kubectl get secret -n ${{ matrix.namespace }} db-credentials >/dev/null 2>&1; then
+          echo "Warning: Secret db-credentials not found after waiting"
+          echo "Checking SecretProviderClass status..."
+          kubectl get secretproviderclass -n ${{ matrix.namespace }} || true
+          kubectl describe secretproviderclass -n ${{ matrix.namespace }} || true
+        else
+          echo "✅ Secret db-credentials is ready"
+        fi
 
     - name: Get ECR repository URLs
       id: ecr-repos
