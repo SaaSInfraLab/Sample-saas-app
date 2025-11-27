@@ -199,14 +199,25 @@ jobs:
     
     - name: Get RDS Secret ARN and AWS Account ID
       run: |
-        # Get the RDS secret ARN from the Terraform state
-        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
-        terraform init -input=false
-        RDS_SECRET_ARN=$(terraform output -raw rds_secret_arn)
+        # Get the RDS secret ARN from AWS Secrets Manager (query by name prefix)
+        # The secret name follows pattern: <name_prefix>-rds-credentials-<hex>
+        SECRET_PREFIX="saas-infra-lab-dev-rds-credentials"
+        RDS_SECRET_ARN=$(aws secretsmanager list-secrets \
+          --region ${{ env.AWS_REGION }} \
+          --query "SecretList[?starts_with(Name, '$SECRET_PREFIX')].ARN | [0]" \
+          --output text)
+        
+        if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "None" ]; then
+          echo "Error: RDS secret not found with prefix $SECRET_PREFIX"
+          echo "Available secrets:"
+          aws secretsmanager list-secrets --region ${{ env.AWS_REGION }} --query 'SecretList[].Name' --output table
+          exit 1
+        fi
+        
         AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
         echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
-        cd -  # Go back to the original directory
+        echo "Found RDS Secret ARN: $RDS_SECRET_ARN"
         
         # Update the aws-secrets-manager.yaml with the secret ARN and AWS account ID
         sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
