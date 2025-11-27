@@ -7,8 +7,6 @@ resources:
   - namespace.yaml
   - backend-deployment.yaml
   - frontend-deployment.yaml
-  - configmap.yaml
-  - secret.yaml
   - servicemonitor.yaml
 
 images:
@@ -19,7 +17,7 @@ images:
     newName: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-frontend
     newTag: latest
 
-commonLabels:
+labels:
   tenant: analytics
   managed-by: terraform
 
