@@ -197,20 +197,27 @@ jobs:
           fi
         fi
     
+    - name: Install jq
+      run: |
+        sudo apt-get update && sudo apt-get install -y jq
+
     - name: Get RDS Secret ARN and AWS Account ID
       run: |
-        # Get the RDS secret ARN from AWS Secrets Manager (query by name prefix)
-        # The secret name follows pattern: <name_prefix>-rds-credentials-<hex>
-        SECRET_PREFIX="saas-infra-lab-dev-rds-credentials"
-        RDS_SECRET_ARN=$(aws secretsmanager list-secrets \
-          --region ${{ env.AWS_REGION }} \
-          --query "SecretList[?starts_with(Name, '$SECRET_PREFIX')].ARN | [0]" \
-          --output text)
+        # Get the RDS secret ARN from Terraform remote state in S3
+        # This reads directly from the S3 backend where Terraform stores state
+        TERRAFORM_STATE_BUCKET="saas-infra-lab-terraform-state"
+        TERRAFORM_STATE_KEY="saas-infra-lab/dev/infrastructure/terraform.tfstate"
         
-        if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "None" ]; then
-          echo "Error: RDS secret not found with prefix $SECRET_PREFIX"
-          echo "Available secrets:"
-          aws secretsmanager list-secrets --region ${{ env.AWS_REGION }} --query 'SecretList[].Name' --output table
+        echo "Downloading Terraform state from S3..."
+        aws s3 cp "s3://${TERRAFORM_STATE_BUCKET}/${TERRAFORM_STATE_KEY}" /tmp/terraform.tfstate
+        
+        # Extract RDS secret ARN from Terraform state using jq
+        RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate)
+        
+        if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ]; then
+          echo "Error: Could not find rds_secret_arn in Terraform state"
+          echo "State file contents (outputs only):"
+          jq '.outputs' /tmp/terraform.tfstate || cat /tmp/terraform.tfstate
           exit 1
         fi
         
@@ -218,6 +225,9 @@ jobs:
         echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
         echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
         echo "Found RDS Secret ARN: $RDS_SECRET_ARN"
+        
+        # Clean up state file (contains sensitive data)
+        rm -f /tmp/terraform.tfstate
         
         # Update the aws-secrets-manager.yaml with the secret ARN and AWS account ID
         sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
