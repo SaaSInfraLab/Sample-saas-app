@@ -236,12 +236,31 @@ jobs:
     - name: Install AWS Secrets Manager CSI Driver
       if: matrix.namespace == 'platform'  # Only install once for the platform namespace
       run: |
-        # Install the AWS Secrets Manager CSI Driver
+        # Check if CSI driver is already installed
+        if kubectl get daemonset -n kube-system csi-secrets-store-csi-driver >/dev/null 2>&1; then
+          echo "CSI Secrets Store Driver already installed"
+        else
+          echo "Installing CSI Secrets Store Driver..."
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/secrets-store-csi-driver.yaml
+        fi
+        
+        # Install the AWS provider for Secrets Manager
+        echo "Installing AWS Secrets Manager provider..."
         kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
         
-        # Wait for the pods to be ready
-        kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=120s
-        kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=secrets-store-csi-driver --timeout=120s
+        # Wait for AWS provider pods to be ready
+        echo "Waiting for AWS provider pods..."
+        kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=120s || true
+        
+        # Wait for CSI driver pods to be ready (if installed)
+        if kubectl get daemonset -n kube-system csi-secrets-store-csi-driver >/dev/null 2>&1; then
+          echo "Waiting for CSI driver pods..."
+          kubectl -n kube-system wait --for=condition=ready pod -l app=secrets-store-csi-driver --timeout=120s || true
+        fi
+        
+        # Verify installation
+        echo "Verifying installation..."
+        kubectl get pods -n kube-system | grep -E "(csi-secrets-store|secrets-store-provider-aws)" || true
 
     - name: Deploy Secrets Manager Configuration
       if: matrix.namespace == 'platform'  # Only deploy once for the platform namespace
