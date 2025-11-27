@@ -197,53 +197,9 @@ jobs:
           fi
         fi
     
-    - name: Install AWS Secrets Manager CSI Driver
-          if: matrix.namespace == 'platform'
-          run: |
-            # Check if Secrets Store CSI Driver is already installed
-            if kubectl get daemonset -n kube-system csi-secrets-store >/dev/null 2>&1; then
-              echo "✅ Secrets Store CSI Driver already installed"
-            else
-              echo "Installing Secrets Store CSI Driver using Helm..."
-              
-              # Add the Secrets Store CSI Driver Helm repo
-              helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
-              helm repo update
-              
-              # Install the Secrets Store CSI Driver
-              helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
-                --namespace kube-system \
-                --set syncSecret.enabled=true \
-                --wait
-              
-              echo "✅ Secrets Store CSI Driver installed successfully"
-            fi
-            
-            # Check if AWS Secrets Manager provider is already installed
-            if kubectl get daemonset -n kube-system csi-secrets-store-provider-aws >/dev/null 2>&1; then
-              echo "✅ AWS Secrets Manager provider already installed"
-            else
-              echo "Installing AWS Secrets Manager provider..."
-              kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
-              
-              # Wait for AWS provider pods to be ready
-              echo "Waiting for AWS provider pods to be ready..."
-              kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=120s || true
-              
-              echo "✅ AWS Secrets Manager provider installed successfully"
-            fi
-            
-            # Verify installation
-            echo ""
-            echo "=== Verification ==="
-            echo "Secrets Store CSI Driver pods:"
-            kubectl get pods -n kube-system -l app=secrets-store-csi-driver || true
-            echo ""
-            echo "AWS Secrets Manager provider pods:"
-            kubectl get pods -n kube-system -l app=csi-secrets-store-provider-aws || true
-            echo ""
-            echo "CRDs:"
-            kubectl get crd | grep secrets-store || true
+    - name: Install jq
+      run: |
+        sudo apt-get update && sudo apt-get install -y jq
 
     - name: Get RDS Secret ARN and AWS Account ID
       run: |
