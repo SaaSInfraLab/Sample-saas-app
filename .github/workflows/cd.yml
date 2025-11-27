@@ -236,12 +236,17 @@ jobs:
     - name: Install AWS Secrets Manager CSI Driver
       if: matrix.namespace == 'platform'  # Only install once for the platform namespace
       run: |
+        # Define URLs as variables to avoid any formatting issues
+        CRD_URL="https://github.com/kubernetes-sigs/secrets-store-csi-driver/releases/download/v1.4.0/secrets-store-csi-driver-crds.yaml"
+        DRIVER_URL="https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/secrets-store-csi-driver.yaml"
+        PROVIDER_URL="https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml"
+        
         # Check if CRD is already installed
         if kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io >/dev/null 2>&1; then
           echo "CSI Secrets Store CRD already installed"
         else
           echo "Installing CSI Secrets Store Driver CRDs..."
-          kubectl apply -f https://github.com/kubernetes-sigs/secrets-store-csi-driver/releases/download/v1.4.0/secrets-store-csi-driver-crds.yaml
+          kubectl apply -f "${CRD_URL}"
         fi
         
         # Wait for CRD to be ready
@@ -253,12 +258,12 @@ jobs:
           echo "CSI Secrets Store Driver already installed"
         else
           echo "Installing CSI Secrets Store Driver..."
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/secrets-store-csi-driver.yaml
+          kubectl apply -f "${DRIVER_URL}"
         fi
         
         # Install the AWS provider for Secrets Manager
         echo "Installing AWS Secrets Manager provider..."
-        kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
+        kubectl apply -f "${PROVIDER_URL}"
         
         # Wait for AWS provider pods to be ready
         echo "Waiting for AWS provider pods..."
