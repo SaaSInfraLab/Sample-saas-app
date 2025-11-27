@@ -241,8 +241,7 @@ jobs:
           echo "CSI Secrets Store CRD already installed"
         else
           echo "Installing CSI Secrets Store Driver CRDs..."
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/crds/secrets-store.csi.x-k8s.io_secretproviderclasses.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/secrets-store-csi-driver/v1.4.0/deploy/crds/secrets-store.csi.x-k8s.io_secretproviderclasspodstatuses.yaml
+          kubectl apply -f https://github.com/kubernetes-sigs/secrets-store-csi-driver/releases/download/v1.4.0/crds.yaml
         fi
         
         # Wait for CRD to be ready
