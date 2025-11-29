@@ -7,8 +7,13 @@ const { pool } = require('../config/database');
  */
 router.get('/', async (req, res) => {
   try {
-    // Check database connection
-    await pool.query('SELECT 1');
+    // Check database connection with timeout
+    const queryPromise = pool.query('SELECT 1');
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database query timeout')), 5000)
+    );
+    
+    await Promise.race([queryPromise, timeoutPromise]);
     
     res.json({
       status: 'healthy',
@@ -17,11 +22,14 @@ router.get('/', async (req, res) => {
       database: 'connected',
     });
   } catch (error) {
-    res.status(503).json({
-      status: 'unhealthy',
+    // Return 200 even if DB is down - app is still running
+    // This prevents Kubernetes from killing the pod
+    res.status(200).json({
+      status: 'degraded',
       timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
       database: 'disconnected',
-      error: error.message,
+      warning: error.message,
     });
   }
 });
@@ -31,8 +39,13 @@ router.get('/', async (req, res) => {
  */
 router.get('/ready', async (req, res) => {
   try {
-    // Check database connection
-    await pool.query('SELECT 1');
+    // Check database connection with timeout
+    const queryPromise = pool.query('SELECT 1');
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database query timeout')), 5000)
+    );
+    
+    await Promise.race([queryPromise, timeoutPromise]);
     
     res.json({
       status: 'ready',
