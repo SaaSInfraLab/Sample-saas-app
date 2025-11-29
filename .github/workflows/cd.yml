@@ -154,6 +154,7 @@ jobs:
     name: Deploy
     needs: [build-backend, build-frontend, cluster-setup]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
@@ -233,19 +234,57 @@ jobs:
 
       - name: Setup Secrets (Platform)
         if: matrix.namespace == 'platform'
+        timeout-minutes: 10
         run: |
-          kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+          set -e
+          echo "🔐 Setting up secrets for platform namespace..."
+          
+          # Verify environment variable is set (set in previous step via $GITHUB_ENV)
+          if [ -z "$RDS_SECRET_ARN" ]; then
+            echo "❌ Error: RDS_SECRET_ARN environment variable is not set"
+            echo "Available env vars:"
+            env | grep -i secret || echo "No secret-related env vars found"
+            exit 1
+          fi
+          
+          echo "✅ Using RDS Secret ARN: ${RDS_SECRET_ARN:0:50}..."
+          
+          echo "📦 Applying SecretProviderClass..."
+          kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml || {
+            echo "❌ Failed to apply aws-secrets-manager.yaml"
+            exit 1
+          }
+          
+          echo "⏳ Waiting for secret sync (max 2 minutes)..."
+          SECRET_READY=false
+          for i in {1..60}; do
+            if kubectl get secret db-credentials -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+              echo "✅ Secret db-credentials is available"
+              SECRET_READY=true
+              break
+            fi
+            echo "Waiting for secret sync... ($i/60)"
+            sleep 2
+          done
+          
           # Create secret manually if CSI sync doesn't work
-          if ! kubectl get secret db-credentials -n ${{ matrix.namespace }} >/dev/null 2>&1; then
-            SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id ${{ env.RDS_SECRET_ARN }} --query SecretString --output text)
+          if [ "$SECRET_READY" != "true" ]; then
+            echo "⚠️  CSI driver did not sync secret, creating manually..."
+            SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$RDS_SECRET_ARN" --query SecretString --output text)
             kubectl create secret generic db-credentials -n ${{ matrix.namespace }} \
               --from-literal=db-host=$(echo "$SECRET_JSON" | jq -r '.host') \
               --from-literal=db-port=$(echo "$SECRET_JSON" | jq -r '.port') \
               --from-literal=db-name=$(echo "$SECRET_JSON" | jq -r '.dbname') \
               --from-literal=db-username=$(echo "$SECRET_JSON" | jq -r '.username') \
               --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
-              --dry-run=client -o yaml | kubectl apply -f -
+              --dry-run=client -o yaml | kubectl apply -f - || {
+              echo "❌ Failed to create secret manually"
+              exit 1
+            }
+            echo "✅ Secret created manually"
           fi
+          
+          echo "✅ Secrets setup completed"
 
       - name: Remove ServiceMonitor if needed
         run: |
