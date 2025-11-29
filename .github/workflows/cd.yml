@@ -7,8 +7,6 @@ on:
       - completed
     branches:
       - main
-    # Only trigger on successful CI runs to avoid cluttering Actions UI
-    # The conclusion check is also in check-ci-status job for redundancy
 
   push:
     tags:
@@ -17,15 +15,14 @@ on:
   workflow_dispatch:
     inputs:
       namespace:
-        description: 'Namespace to deploy to'
-        required: true
-        default: 'platform'
+        description: 'Namespace to deploy to (leave empty for all)'
+        required: false
+        default: ''
         type: choice
         options:
+          - ''
           - platform
           - analytics
-          # Note: 'data' namespace exists but not deployed by default
-          # Add it to the matrix above to deploy all 3 namespaces
 
 env:
   AWS_REGION: us-east-1
@@ -37,18 +34,30 @@ jobs:
     name: Check CI Pipeline Status
     runs-on: ubuntu-latest
     if: |
-      (${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}) ||
-      (${{ github.event_name == 'workflow_dispatch' }}) ||
-      (${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }})
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    outputs:
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
     steps:
       - name: Verify CI passed or manual trigger
+        id: check
         run: |
           if [ "${{ github.event_name }}" == "workflow_run" ]; then
-            echo "✅ CI pipeline completed successfully - proceeding with deployment"
+            if [ "${{ github.event.workflow_run.conclusion }}" == "success" ]; then
+              echo "✅ CI pipeline completed successfully - proceeding with deployment"
+              echo "should_deploy=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ CI pipeline did not succeed (status: ${{ github.event.workflow_run.conclusion }})"
+              echo "should_deploy=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "✅ Manual trigger - proceeding with deployment"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" == "push" ]; then
             echo "✅ Version tag release - proceeding with deployment"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
           fi
 
   build-backend:
@@ -60,8 +69,8 @@ jobs:
       contents: read
     
     outputs:
-      image: ${{ steps.meta-backend.outputs.tags }}
-      image-tag: ${{ steps.meta-backend.outputs.version }}
+      image: ${{ steps.image-info.outputs.image }}
+      image-tag: ${{ steps.image-info.outputs.tag }}
     
     steps:
     - name: Checkout code
@@ -95,7 +104,7 @@ jobs:
           type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
+          type=sha
           type=raw,value=latest,enable={{is_default_branch}}
     
     - name: Build and push backend image
@@ -105,8 +114,20 @@ jobs:
         file: ./backend/Dockerfile
         push: true
         tags: ${{ steps.meta-backend.outputs.tags }}
+        labels: ${{ steps.meta-backend.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+    
+    - name: Output image information
+      id: image-info
+      run: |
+        # Extract the first tag from metadata output
+        FIRST_TAG=$(echo "${{ steps.meta-backend.outputs.tags }}" | head -n1 | cut -d':' -f2)
+        FULL_IMAGE=$(echo "${{ steps.meta-backend.outputs.tags }}" | head -n1)
+        echo "tag=$FIRST_TAG" >> $GITHUB_OUTPUT
+        echo "image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+        echo "Backend image: $FULL_IMAGE"
+        echo "Backend tag: $FIRST_TAG"
 
   build-frontend:
     name: Build and Push Frontend Image
@@ -117,7 +138,8 @@ jobs:
       contents: read
     
     outputs:
-      image: ${{ steps.meta-frontend.outputs.tags }}
+      image: ${{ steps.image-info.outputs.image }}
+      image-tag: ${{ steps.image-info.outputs.tag }}
     
     steps:
     - name: Checkout code
@@ -151,7 +173,7 @@ jobs:
           type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
+          type=sha
           type=raw,value=latest,enable={{is_default_branch}}
     
     - name: Build and push frontend image
@@ -161,8 +183,20 @@ jobs:
         file: ./frontend/Dockerfile
         push: true
         tags: ${{ steps.meta-frontend.outputs.tags }}
+        labels: ${{ steps.meta-frontend.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+    
+    - name: Output image information
+      id: image-info
+      run: |
+        # Extract the first tag from metadata output
+        FIRST_TAG=$(echo "${{ steps.meta-frontend.outputs.tags }}" | head -n1 | cut -d':' -f2)
+        FULL_IMAGE=$(echo "${{ steps.meta-frontend.outputs.tags }}" | head -n1)
+        echo "tag=$FIRST_TAG" >> $GITHUB_OUTPUT
+        echo "image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+        echo "Frontend image: $FULL_IMAGE"
+        echo "Frontend tag: $FIRST_TAG"
 
   cluster-setup:
     name: Setup Cluster and Install CSI Driver
@@ -171,6 +205,9 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    
+    outputs:
+      cluster_name: ${{ steps.eks-cluster.outputs.cluster_name }}
     
     steps:
     - name: Checkout code
@@ -192,10 +229,11 @@ jobs:
       run: |
         CLUSTER_NAME=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[0]' --output text)
         if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" == "None" ]; then
-          echo "Error: No EKS clusters found in region ${{ env.AWS_REGION }}"
+          echo "❌ Error: No EKS clusters found in region ${{ env.AWS_REGION }}"
           exit 1
         fi
         echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+        echo "Found EKS cluster: $CLUSTER_NAME"
     
     - name: Update kubeconfig
       run: |
@@ -208,6 +246,7 @@ jobs:
     - name: Install Helm
       run: |
         curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        helm version
     
     - name: Install AWS Secrets Manager CSI Driver
       run: |
@@ -215,17 +254,17 @@ jobs:
         if kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io >/dev/null 2>&1; then
           echo "✅ Secrets Store CSI Driver already installed (CRD exists)"
         else
-          echo "Installing Secrets Store CSI Driver using Helm..."
+          echo "📦 Installing Secrets Store CSI Driver using Helm..."
           
           # Add the Secrets Store CSI Driver Helm repo
           helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
           helm repo update
           
           # Install the Secrets Store CSI Driver with increased timeout
-          # Helm will automatically install CRDs and the driver
           helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
             --namespace kube-system \
             --set syncSecret.enabled=true \
+            --set enableSecretRotation=true \
             --timeout 10m \
             --wait
           
@@ -236,30 +275,30 @@ jobs:
         if kubectl get daemonset -n kube-system csi-secrets-store-provider-aws >/dev/null 2>&1; then
           echo "✅ AWS Secrets Manager provider already installed"
         else
-          echo "Installing AWS Secrets Manager provider..."
+          echo "📦 Installing AWS Secrets Manager provider..."
           kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
           
           # Wait for AWS provider pods to be ready
-          echo "Waiting for AWS provider pods to be ready..."
-          kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=120s || true
+          echo "⏳ Waiting for AWS provider pods to be ready..."
+          kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=180s
           
           echo "✅ AWS Secrets Manager provider installed successfully"
         fi
         
         # Verify installation
         echo ""
-        echo "=== Verification ==="
-        kubectl get crd | grep secrets-store || true
-        kubectl get pods -n kube-system -l app=secrets-store-csi-driver || true
-        kubectl get pods -n kube-system -l app=csi-secrets-store-provider-aws || true
+        echo "=== Installation Verification ==="
+        kubectl get crd | grep secrets-store || echo "⚠️  Warning: SecretProviderClass CRD not found"
+        echo ""
+        echo "CSI Driver Pods:"
+        kubectl get pods -n kube-system -l app=secrets-store-csi-driver
+        echo ""
+        echo "AWS Provider Pods:"
+        kubectl get pods -n kube-system -l app=csi-secrets-store-provider-aws
 
   deploy:
-    name: Deploy to EKS
+    name: Deploy to EKS (${{ matrix.namespace }})
     needs: [build-backend, build-frontend, cluster-setup]
-    
-    outputs:
-      backend-image: ${{ steps.set-images.outputs.backend-image }}
-      frontend-image: ${{ steps.set-images.outputs.frontend-image }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -268,9 +307,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Deploy to 2 namespaces by default (fits on 2 t3.micro nodes)
-        # To deploy to 3 namespaces, add 'data' to the list and scale nodes to 3
-        namespace: [platform, analytics]
+        # Dynamic namespace selection based on trigger type
+        namespace: ${{ 
+          github.event_name == 'workflow_dispatch' && github.event.inputs.namespace != '' && 
+          fromJSON(format('["{0}"]', github.event.inputs.namespace)) || 
+          fromJSON('["platform", "analytics"]') 
+        }}
     
     steps:
     - name: Checkout code
@@ -287,99 +329,120 @@ jobs:
       with:
         version: 'latest'
     
-    - name: Get EKS cluster name
-      id: eks-cluster
-      run: |
-        CLUSTER_NAME=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[0]' --output text)
-        if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" == "None" ]; then
-          echo "Error: No EKS clusters found in region ${{ env.AWS_REGION }}"
-          exit 1
-        fi
-        echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
-    
     - name: Update kubeconfig
       run: |
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
 
     - name: Export kubeconfig path
       run: |
         echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
 
-    - name: Skip ServiceMonitor if CRD missing
+    - name: Ensure namespace exists
       run: |
-        if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
-          echo "ServiceMonitor CRD present - keeping manifest"
+        if kubectl get namespace ${{ matrix.namespace }} >/dev/null 2>&1; then
+          echo "✅ Namespace ${{ matrix.namespace }} already exists"
         else
-          echo "ServiceMonitor CRD not found - removing manifest for namespace ${{ matrix.namespace }}"
-          # Remove servicemonitor.yaml file if it exists
-          find k8s/namespace-${{ matrix.namespace }} -name "servicemonitor.yaml" -exec rm -f {} \;
-          # Remove from kustomization.yaml using multiple methods for robustness
-          KUSTOMIZATION_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
-          if [ -f "$KUSTOMIZATION_FILE" ]; then
-            if command -v yq >/dev/null 2>&1; then
-              # Use yq to properly remove the resource entry
-              yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' "$KUSTOMIZATION_FILE" || true
-            fi
-            # Also use sed as fallback to remove lines containing servicemonitor.yaml
-            sed -i '/servicemonitor\.yaml/d' "$KUSTOMIZATION_FILE" || true
-            # Remove empty lines that might result
-            sed -i '/^[[:space:]]*$/d' "$KUSTOMIZATION_FILE" || true
-          fi
+          echo "📦 Creating namespace ${{ matrix.namespace }}..."
+          kubectl create namespace ${{ matrix.namespace }}
+          echo "✅ Namespace created successfully"
         fi
-    
-    - name: Install jq
+
+    - name: Install jq and yq
       run: |
         sudo apt-get update && sudo apt-get install -y jq
+        # Install yq for better YAML manipulation
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        sudo chmod +x /usr/local/bin/yq
+        yq --version
+
+    - name: Skip ServiceMonitor if CRD missing
+      run: |
+        KUSTOMIZATION_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
+        SERVICEMONITOR_FILE="k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml"
+        
+        if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+          echo "✅ ServiceMonitor CRD present - keeping manifest"
+        else
+          echo "⚠️  ServiceMonitor CRD not found - removing manifest"
+          
+          # Remove file if it exists
+          if [ -f "$SERVICEMONITOR_FILE" ]; then
+            rm -f "$SERVICEMONITOR_FILE"
+            echo "Removed servicemonitor.yaml file"
+          fi
+          
+          # Remove from kustomization.yaml if referenced
+          if [ -f "$KUSTOMIZATION_FILE" ]; then
+            if grep -q "servicemonitor.yaml" "$KUSTOMIZATION_FILE"; then
+              yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' "$KUSTOMIZATION_FILE"
+              echo "Removed servicemonitor.yaml from kustomization.yaml"
+            fi
+          fi
+        fi
 
     - name: Get RDS Secret ARN and AWS Account ID
       run: |
-        echo "Downloading Terraform state from S3..."
+        echo "⏳ Downloading Terraform state from S3..."
         aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate
         
         RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate)
         
         if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ]; then
-          echo "Error: Could not find rds_secret_arn in Terraform state"
-          jq '.outputs' /tmp/terraform.tfstate || cat /tmp/terraform.tfstate
+          echo "❌ Error: Could not find rds_secret_arn in Terraform state"
+          echo "Available outputs:"
+          jq '.outputs | keys' /tmp/terraform.tfstate || cat /tmp/terraform.tfstate
           exit 1
         fi
         
         AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
         echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
-        echo "Found RDS Secret ARN: $RDS_SECRET_ARN"
+        echo "✅ Found RDS Secret ARN: $RDS_SECRET_ARN"
         
         rm -f /tmp/terraform.tfstate
         
-        sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
-        sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+        # Update the SecretProviderClass manifest with actual values
+        if [ -f "k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml" ]; then
+          sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+          sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+          echo "✅ Updated aws-secrets-manager.yaml with actual values"
+        fi
 
-    - name: Deploy Secrets Manager Configuration
-      # Only platform namespace uses AWS Secrets Manager CSI driver for db-credentials
-      # Analytics namespace uses postgresql-secret and backend-config created by Terraform
+    - name: Deploy Secrets Manager Configuration (Platform Only)
       if: matrix.namespace == 'platform'
       run: |
-        echo "Checking SecretProviderClass CRD..."
-        kubectl wait --for condition=established --timeout=60s crd/secretproviderclasses.secrets-store.csi.x-k8s.io || {
-          echo "Error: SecretProviderClass CRD not available"
-          kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io
-          exit 1
-        }
+        echo "🔐 Configuring AWS Secrets Manager for platform namespace..."
         
-        echo "Applying SecretProviderClass..."
+        # Verify SecretProviderClass CRD is available
+        echo "⏳ Checking SecretProviderClass CRD..."
+        if ! kubectl wait --for condition=established --timeout=60s crd/secretproviderclasses.secrets-store.csi.x-k8s.io; then
+          echo "❌ Error: SecretProviderClass CRD not available"
+          kubectl get crd | grep secret || true
+          exit 1
+        fi
+        
+        # Apply the SecretProviderClass
+        echo "📦 Applying SecretProviderClass..."
         kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
         
-        # Trigger secret creation by running a one-time job that mounts the SecretProviderClass
-        echo "Triggering secret sync with init job..."
-        NAMESPACE="${{ matrix.namespace }}"
+        # Verify SecretProviderClass was created
+        if ! kubectl get secretproviderclass db-secret-provider -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+          echo "❌ Error: SecretProviderClass db-secret-provider was not created"
+          exit 1
+        fi
+        echo "✅ SecretProviderClass db-secret-provider created"
+        
+        # Create a one-time job to trigger secret sync
+        echo "🔄 Triggering secret sync with init job..."
         cat > /tmp/secret-sync-job.yaml <<'EOF'
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: secret-sync-trigger-PLACEHOLDER
-  namespace: PLACEHOLDER
+  name: secret-sync-trigger
+  namespace: platform
 spec:
   ttlSecondsAfterFinished: 300
+  backoffLimit: 3
   template:
     spec:
       serviceAccountName: backend-sa
@@ -387,7 +450,21 @@ spec:
       containers:
       - name: secret-sync
         image: busybox:1.36
-        command: ['sh', '-c', 'echo "Triggering secret sync..." && ls -la /mnt/secrets-store/ && echo "Done"']
+        command: 
+          - sh
+          - -c
+          - |
+            echo "🔄 Triggering secret sync..."
+            echo "Checking mounted secrets:"
+            ls -la /mnt/secrets-store/ || echo "No secrets found"
+            if [ -f /mnt/secrets-store/db-host ]; then
+              echo "✅ Secrets successfully mounted"
+              cat /mnt/secrets-store/db-host
+            else
+              echo "⚠️  Secrets not yet available"
+              exit 1
+            fi
+            echo "✅ Secret sync completed"
         volumeMounts:
         - name: secrets-store-inline
           mountPath: "/mnt/secrets-store"
@@ -407,20 +484,28 @@ spec:
           volumeAttributes:
             secretProviderClass: "db-secret-provider"
 EOF
-        sed -i "s/PLACEHOLDER/${NAMESPACE}/g" /tmp/secret-sync-job.yaml
+        
+        # Delete old job if it exists
+        kubectl delete job secret-sync-trigger -n ${{ matrix.namespace }} --ignore-not-found=true
+        
+        # Apply the job
         kubectl apply -f /tmp/secret-sync-job.yaml
         
-        # Wait for job to complete (max 60 seconds)
-        echo "Waiting for secret sync job to complete..."
-        kubectl wait --for=condition=complete --timeout=60s job/secret-sync-trigger-${NAMESPACE} -n ${NAMESPACE} || true
+        # Wait for job to complete
+        echo "⏳ Waiting for secret sync job to complete (max 2 minutes)..."
+        if kubectl wait --for=condition=complete --timeout=120s job/secret-sync-trigger -n ${{ matrix.namespace }}; then
+          echo "✅ Secret sync job completed successfully"
+        else
+          echo "⚠️  Secret sync job did not complete in time, checking status..."
+          kubectl describe job secret-sync-trigger -n ${{ matrix.namespace }} || true
+          kubectl logs job/secret-sync-trigger -n ${{ matrix.namespace }} || true
+        fi
         
-        # Clean up the job
-        kubectl delete job secret-sync-trigger-${NAMESPACE} -n ${NAMESPACE} --ignore-not-found=true
-        
-        echo "Waiting for secret to be available (CSI driver sync can take up to 2 minutes)..."
+        # Wait for the Kubernetes secret to be created by CSI driver
+        echo "⏳ Waiting for db-credentials secret to be available..."
         SECRET_READY=false
         for i in {1..60}; do
-          if kubectl get secret -n ${NAMESPACE} db-credentials >/dev/null 2>&1; then
+          if kubectl get secret db-credentials -n ${{ matrix.namespace }} >/dev/null 2>&1; then
             echo "✅ Secret db-credentials is available"
             SECRET_READY=true
             break
@@ -429,26 +514,22 @@ EOF
           sleep 2
         done
         
+        # Fallback: Create secret manually from AWS Secrets Manager if CSI sync failed
         if [ "$SECRET_READY" != "true" ]; then
-          echo "⚠️  Warning: Secret not synced by CSI driver after 2 minutes, will create manually"
-        fi
-        
-        if ! kubectl get secret -n ${NAMESPACE} db-credentials >/dev/null 2>&1; then
-          echo "Secret db-credentials not found after waiting. Creating it from AWS Secrets Manager..."
+          echo "⚠️  CSI driver did not sync secret in time, creating manually..."
           
-          # Get secret from AWS Secrets Manager and create Kubernetes secret
           SECRET_JSON=$(aws secretsmanager get-secret-value \
             --secret-id ${{ env.RDS_SECRET_ARN }} \
             --query SecretString \
             --output text)
           
-          DB_HOST=$(echo $SECRET_JSON | jq -r '.host')
-          DB_PORT=$(echo $SECRET_JSON | jq -r '.port')
-          DB_NAME=$(echo $SECRET_JSON | jq -r '.dbname')
-          DB_USER=$(echo $SECRET_JSON | jq -r '.username')
-          DB_PASS=$(echo $SECRET_JSON | jq -r '.password')
+          DB_HOST=$(echo "$SECRET_JSON" | jq -r '.host')
+          DB_PORT=$(echo "$SECRET_JSON" | jq -r '.port')
+          DB_NAME=$(echo "$SECRET_JSON" | jq -r '.dbname')
+          DB_USER=$(echo "$SECRET_JSON" | jq -r '.username')
+          DB_PASS=$(echo "$SECRET_JSON" | jq -r '.password')
           
-          kubectl create secret generic db-credentials -n ${NAMESPACE} \
+          kubectl create secret generic db-credentials -n ${{ matrix.namespace }} \
             --from-literal=db-host="$DB_HOST" \
             --from-literal=db-port="$DB_PORT" \
             --from-literal=db-name="$DB_NAME" \
@@ -456,150 +537,261 @@ EOF
             --from-literal=db-password="$DB_PASS" \
             --dry-run=client -o yaml | kubectl apply -f -
           
-          echo "✅ Secret db-credentials created from AWS Secrets Manager"
-        else
-          echo "✅ Secret db-credentials is ready"
+          echo "✅ Secret db-credentials created manually from AWS Secrets Manager"
+        fi
+        
+        # Clean up the job
+        kubectl delete job secret-sync-trigger -n ${{ matrix.namespace }} --ignore-not-found=true
+
+    - name: Verify Required Secrets Exist
+      run: |
+        echo "🔍 Verifying required secrets for ${{ matrix.namespace }} namespace..."
+        
+        if [ "${{ matrix.namespace }}" == "platform" ]; then
+          # Platform namespace requires db-credentials from CSI driver
+          if kubectl get secret db-credentials -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "✅ db-credentials secret exists in platform namespace"
+            kubectl get secret db-credentials -n ${{ matrix.namespace }} -o jsonpath='{.data}' | jq 'keys'
+          else
+            echo "❌ Error: db-credentials secret not found in platform namespace"
+            echo "Available secrets:"
+            kubectl get secrets -n ${{ matrix.namespace }}
+            exit 1
+          fi
+        elif [ "${{ matrix.namespace }}" == "analytics" ]; then
+          # Analytics namespace requires terraform-created secrets
+          MISSING_RESOURCES=false
+          
+          if kubectl get secret postgresql-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "✅ postgresql-secret exists in analytics namespace"
+          else
+            echo "❌ Error: postgresql-secret not found in analytics namespace"
+            MISSING_RESOURCES=true
+          fi
+          
+          if kubectl get configmap backend-config -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "✅ backend-config configmap exists in analytics namespace"
+          else
+            echo "⚠️  Warning: backend-config configmap not found in analytics namespace"
+          fi
+          
+          if [ "$MISSING_RESOURCES" == "true" ]; then
+            echo ""
+            echo "❌ Missing required resources in analytics namespace"
+            echo "Please ensure Terraform has created these resources"
+            echo "Available secrets:"
+            kubectl get secrets -n ${{ matrix.namespace }}
+            echo "Available configmaps:"
+            kubectl get configmaps -n ${{ matrix.namespace }}
+            exit 1
+          fi
         fi
 
     - name: Update Kubernetes manifests with image tags
       run: |
-        # Try to get image tags from build job outputs first, fallback to computed tags
+        echo "🏷️  Updating Kubernetes manifests with built image tags..."
+        
+        # Use the exact images from build job outputs
+        BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
+        FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
+        
+        echo "Backend image: $BACKEND_IMAGE"
+        echo "Frontend image: $FRONTEND_IMAGE"
+        
+        # Verify images exist in ECR
         ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+        BACKEND_TAG="${{ needs.build-backend.outputs.image-tag }}"
+        FRONTEND_TAG="${{ needs.build-frontend.outputs.image-tag }}"
         
-        # Determine image tag based on build job outputs or compute from context
-        if [ "${{ github.ref }}" == "refs/heads/main" ] || [ "${{ github.ref }}" == "refs/heads/master" ]; then
-          IMAGE_TAG="latest"
+        echo "⏳ Verifying images exist in ECR..."
+        if aws ecr describe-images \
+            --repository-name ${{ secrets.ECR_BACKEND_REPO }} \
+            --image-ids imageTag="$BACKEND_TAG" \
+            --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+          echo "✅ Backend image verified in ECR"
         else
-          BRANCH_NAME="${{ github.ref_name }}"
-          SHORT_SHA="${{ github.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
-          IMAGE_TAG="${BRANCH_NAME}-${SHORT_SHA}"
+          echo "❌ Error: Backend image with tag $BACKEND_TAG not found in ECR"
+          echo "Available tags:"
+          aws ecr list-images --repository-name ${{ secrets.ECR_BACKEND_REPO }} --region ${{ env.AWS_REGION }} | jq -r '.imageIds[].imageTag' | head -10
+          exit 1
         fi
         
-        BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:$IMAGE_TAG"
-        FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:$IMAGE_TAG"
-        
-        echo "Updating manifests with:"
-        echo "  Backend: $BACKEND_IMAGE"
-        echo "  Frontend: $FRONTEND_IMAGE"
-        
-        # Verify images exist in ECR - try multiple tag formats
-        echo "Verifying images exist in ECR..."
-        IMAGE_FOUND=false
-        for TAG in "$IMAGE_TAG" "latest" "${{ github.ref_name }}-${{ github.sha }}" "${{ github.sha }}"; do
-          if aws ecr describe-images --repository-name ${{ secrets.ECR_BACKEND_REPO }} --image-ids imageTag=$TAG --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
-            echo "✅ Found backend image with tag: $TAG"
-            BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:$TAG"
-            FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:$TAG"
-            IMAGE_FOUND=true
-            break
-          fi
-        done
-        
-        if [ "$IMAGE_FOUND" != "true" ]; then
-          echo "⚠️  Warning: Could not find backend image with any expected tag, using computed tag: $IMAGE_TAG"
+        if aws ecr describe-images \
+            --repository-name ${{ secrets.ECR_FRONTEND_REPO }} \
+            --image-ids imageTag="$FRONTEND_TAG" \
+            --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+          echo "✅ Frontend image verified in ECR"
+        else
+          echo "❌ Error: Frontend image with tag $FRONTEND_TAG not found in ECR"
+          exit 1
         fi
         
-        find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|image:.*task-management-backend.*|image: $BACKEND_IMAGE|g" {} \;
-        find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|image:.*task-management-frontend.*|image: $FRONTEND_IMAGE|g" {} \;
+        # Update deployment manifests with verified images
+        find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec \
+          sed -i "s|image:.*task-management-backend.*|image: $BACKEND_IMAGE|g" {} \;
+        
+        find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec \
+          sed -i "s|image:.*task-management-frontend.*|image: $FRONTEND_IMAGE|g" {} \;
+        
+        echo "✅ Manifests updated successfully"
     
-    - name: Check node resources and pod capacity
+    - name: Check Cluster Resources
       run: |
-        echo "=== Node Resources & Pod Capacity ==="
+        echo "=== Cluster Resource Check ==="
+        echo ""
+        echo "📊 Node Information:"
+        kubectl get nodes -o custom-columns=\
+NAME:.metadata.name,\
+STATUS:.status.conditions[-1].type,\
+CPU:.status.capacity.cpu,\
+MEMORY:.status.capacity.memory,\
+PODS:.status.capacity.pods,\
+INSTANCE:.metadata.labels.'beta\.kubernetes\.io/instance-type'
+        
+        echo ""
+        echo "📦 Current Pod Distribution:"
         for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
           echo ""
           echo "Node: $node"
           POD_CAPACITY=$(kubectl get node $node -o jsonpath='{.status.capacity.pods}')
-          POD_ALLOCATABLE=$(kubectl get node $node -o jsonpath='{.status.allocatable.pods}')
-          RUNNING_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase=Running -o wide | grep $node | wc -l)
-          PENDING_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o wide | grep $node | wc -l)
+          RUNNING_PODS=$(kubectl get pods --all-namespaces --field-selector=spec.nodeName=$node,status.phase=Running --no-headers 2>/dev/null | wc -l)
+          PENDING_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+          
           echo "  Pod Capacity: $POD_CAPACITY"
-          echo "  Pod Allocatable: $POD_ALLOCATABLE"
           echo "  Running Pods: $RUNNING_PODS"
-          echo "  Pending Pods: $PENDING_PODS"
-          if [ "$RUNNING_PODS" -ge "$POD_CAPACITY" ]; then
-            echo "  ❌ ERROR: Node is at pod capacity! Cannot schedule more pods."
-            echo "  💡 Solution: Increase max pods per node or upgrade to larger instance types"
-            NODE_CAPACITY_ISSUE=true
+          
+          AVAILABLE_PODS=$((POD_CAPACITY - RUNNING_PODS))
+          echo "  Available Slots: $AVAILABLE_PODS"
+          
+          if [ "$AVAILABLE_PODS" -lt 2 ]; then
+            echo "  ⚠️  Warning: Low pod capacity on this node"
           fi
         done
-        echo ""
-        echo "=== Node Details ==="
-        kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU:.status.capacity.cpu,MEMORY:.status.capacity.memory,PODS:.status.capacity.pods,INSTANCE-TYPE:.metadata.labels.'beta\.kubernetes\.io/instance-type'
-        echo ""
-        echo "=== Pending Pods Summary ==="
-        PENDING_COUNT=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
-        if [ "$PENDING_COUNT" -gt 0 ]; then
-          echo "Found $PENDING_COUNT pending pods:"
-          kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o wide
+        
+        # Check for pending pods
+        TOTAL_PENDING=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+        if [ "$TOTAL_PENDING" -gt 0 ]; then
           echo ""
-          echo "=== Pending Pod Reasons ==="
-          for pod in $(kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}'); do
-            NS=$(echo $pod | cut -d'/' -f1)
-            NAME=$(echo $pod | cut -d'/' -f2)
-            echo "Pod: $NS/$NAME"
-            kubectl describe pod $NAME -n $NS | grep -A 3 "Events:" | tail -3 || true
-          done
-        else
-          echo "No pending pods found."
+          echo "⚠️  Found $TOTAL_PENDING pending pods in cluster:"
+          kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o wide
         fi
         
-        # Fail if nodes are at capacity
-        if [ "${NODE_CAPACITY_ISSUE:-false}" == "true" ]; then
-          echo ""
-          echo "❌ Deployment blocked: One or more nodes are at pod capacity"
-          echo "Please increase node capacity or scale up the cluster before deploying"
-          exit 1
-        fi
+        # Check resource quotas
+        echo ""
+        echo "📋 Resource Quotas in ${{ matrix.namespace }}:"
+        kubectl get resourcequota -n ${{ matrix.namespace }} 2>/dev/null || echo "No resource quotas defined"
     
     - name: Deploy to ${{ matrix.namespace }} namespace
       run: |
-        kubectl apply -k k8s/namespace-${{ matrix.namespace }}
-        echo "Waiting 10 seconds for pods to be created..."
-        sleep 10
+        echo "🚀 Deploying to ${{ matrix.namespace }} namespace..."
+        echo ""
         
-        # Wait for deployments with proper error handling
-        echo "Waiting for backend deployment to be ready..."
+        # Apply kustomization
+        kubectl apply -k k8s/namespace-${{ matrix.namespace }}
+        
+        echo ""
+        echo "⏳ Waiting for pods to be created..."
+        sleep 15
+        
+        echo ""
+        echo "📦 Current pods in namespace:"
+        kubectl get pods -n ${{ matrix.namespace }}
+        
+        echo ""
+        echo "⏳ Waiting for backend deployment to be ready..."
         if kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m; then
           echo "✅ Backend deployment successful"
         else
           echo "❌ Backend deployment failed or timed out"
+          echo ""
+          echo "Deployment status:"
           kubectl describe deployment backend -n ${{ matrix.namespace }}
-          kubectl logs -n ${{ matrix.namespace }} -l app=backend --tail=50 || true
+          echo ""
+          echo "Pod status:"
+          kubectl get pods -n ${{ matrix.namespace }} -l app=backend
+          echo ""
+          echo "Recent logs:"
+          kubectl logs -n ${{ matrix.namespace }} -l app=backend --tail=50 --prefix=true || true
           exit 1
         fi
         
-        echo "Waiting for frontend deployment to be ready..."
+        echo ""
+        echo "⏳ Waiting for frontend deployment to be ready..."
         if kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m; then
           echo "✅ Frontend deployment successful"
         else
           echo "❌ Frontend deployment failed or timed out"
+          echo ""
+          echo "Deployment status:"
           kubectl describe deployment frontend -n ${{ matrix.namespace }}
-          kubectl logs -n ${{ matrix.namespace }} -l app=frontend --tail=50 || true
+          echo ""
+          echo "Pod status:"
+          kubectl get pods -n ${{ matrix.namespace }} -l app=frontend
+          echo ""
+          echo "Recent logs:"
+          kubectl logs -n ${{ matrix.namespace }} -l app=frontend --tail=50 --prefix=true || true
           exit 1
         fi
+        
+        echo ""
+        echo "✅ Deployment to ${{ matrix.namespace }} completed successfully"
     
-    - name: Verify deployment
+    - name: Verify Deployment
       run: |
-        echo "=== Pods in ${{ matrix.namespace }} namespace ==="
-        kubectl get pods -n ${{ matrix.namespace }}
+        echo "=== Deployment Verification for ${{ matrix.namespace }} ==="
         echo ""
-        echo "=== Pod Events (for troubleshooting) ==="
-        kubectl get events -n ${{ matrix.namespace }} --sort-by='.lastTimestamp' | tail -20 || true
+        
+        echo "📦 All Pods:"
+        kubectl get pods -n ${{ matrix.namespace }} -o wide
+        
         echo ""
-        echo "=== Pod Details (if pending) ==="
-        for pod in $(kubectl get pods -n ${{ matrix.namespace }} -o jsonpath='{.items[?(@.status.phase=="Pending")].metadata.name}'); do
-          if [ -n "$pod" ]; then
-            echo "--- Describing pending pod: $pod ---"
-            kubectl describe pod $pod -n ${{ matrix.namespace }} || true
-          fi
-        done
-        echo ""
-        echo "=== Resource Quotas ==="
-        kubectl get resourcequota -n ${{ matrix.namespace }} || true
-        echo ""
-        echo "=== Node Resources ==="
-        kubectl top nodes 2>/dev/null || echo "Metrics server not available"
-        echo ""
-        echo "=== Services in ${{ matrix.namespace }} namespace ==="
+        echo "🌐 Services:"
         kubectl get services -n ${{ matrix.namespace }}
+        
+        echo ""
+        echo "📊 Deployments:"
+        kubectl get deployments -n ${{ matrix.namespace }}
+        
+        echo ""
+        echo "🔍 Recent Events:"
+        kubectl get events -n ${{ matrix.namespace }} --sort-by='.lastTimestamp' | tail -20
+        
+        echo ""
+        echo "📈 Resource Usage (if metrics-server available):"
+        kubectl top pods -n ${{ matrix.namespace }} 2>/dev/null || echo "Metrics server not available"
+        
+        # Check if all pods are running
+        NOT_RUNNING=$(kubectl get pods -n ${{ matrix.namespace }} -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}')
+        if [ -n "$NOT_RUNNING" ]; then
+          echo ""
+          echo "⚠️  Warning: Some pods are not in Running state:"
+          for pod in $NOT_RUNNING; do
+            echo "  - $pod"
+            kubectl describe pod $pod -n ${{ matrix.namespace }} | grep -A 5 "Events:" || true
+          done
+        fi
+        
+        echo ""
+        echo "✅ Verification complete for ${{ matrix.namespace }} namespace"
+
+  deployment-summary:
+    name: Deployment Summary
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "=== Deployment Summary ==="
+          echo ""
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ All deployments completed successfully"
+            echo ""
+            echo "Deployed namespaces:"
+            echo "  - platform"
+            echo "  - analytics"
+          else
+            echo "❌ Some deployments failed"
+            echo "Check the logs above for details"
+            exit 1
+          fi
