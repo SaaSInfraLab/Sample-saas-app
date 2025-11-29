@@ -8,7 +8,6 @@ resources:
   - aws-secrets-manager.yaml
   - backend-deployment.yaml
   - frontend-deployment.yaml
-  - servicemonitor.yaml
 
 images:
   - name: task-management-backend

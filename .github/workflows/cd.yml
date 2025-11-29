@@ -252,6 +252,10 @@ jobs:
   deploy:
     name: Deploy to EKS
     needs: [build-backend, build-frontend, cluster-setup]
+    
+    outputs:
+      backend-image: ${{ steps.set-images.outputs.backend-image }}
+      frontend-image: ${{ steps.set-images.outputs.frontend-image }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -373,9 +377,15 @@ jobs:
 
     - name: Update Kubernetes manifests with image tags
       run: |
-        IMAGE_TAG="${{ github.sha }}"
-        if [ -z "$IMAGE_TAG" ]; then
+        # Use latest tag for default branch, or branch-SHA format for others
+        BRANCH_NAME="${{ github.ref_name }}"
+        SHORT_SHA="${{ github.sha }}"
+        SHORT_SHA="${SHORT_SHA:0:7}"
+        
+        if [ "${{ github.ref }}" == "refs/heads/main" ] || [ "${{ github.ref }}" == "refs/heads/master" ]; then
           IMAGE_TAG="latest"
+        else
+          IMAGE_TAG="${BRANCH_NAME}-${SHORT_SHA}"
         fi
         
         ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
@@ -386,12 +396,63 @@ jobs:
         echo "  Backend: $BACKEND_IMAGE"
         echo "  Frontend: $FRONTEND_IMAGE"
         
+        # Verify images exist in ECR
+        echo "Verifying images exist in ECR..."
+        aws ecr describe-images --repository-name ${{ secrets.ECR_BACKEND_REPO }} --image-ids imageTag=$IMAGE_TAG --region ${{ env.AWS_REGION }} || {
+          echo "Warning: Backend image with tag $IMAGE_TAG not found, trying 'latest'..."
+          IMAGE_TAG="latest"
+          BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:$IMAGE_TAG"
+          FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:$IMAGE_TAG"
+        }
+        
         find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|image:.*task-management-backend.*|image: $BACKEND_IMAGE|g" {} \;
         find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|image:.*task-management-frontend.*|image: $FRONTEND_IMAGE|g" {} \;
+    
+    - name: Check node resources and pod capacity
+      run: |
+        echo "=== Node Resources & Pod Capacity ==="
+        for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+          echo ""
+          echo "Node: $node"
+          POD_CAPACITY=$(kubectl get node $node -o jsonpath='{.status.capacity.pods}')
+          POD_ALLOCATABLE=$(kubectl get node $node -o jsonpath='{.status.allocatable.pods}')
+          RUNNING_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase=Running -o wide | grep $node | wc -l)
+          PENDING_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o wide | grep $node | wc -l)
+          echo "  Pod Capacity: $POD_CAPACITY"
+          echo "  Pod Allocatable: $POD_ALLOCATABLE"
+          echo "  Running Pods: $RUNNING_PODS"
+          echo "  Pending Pods: $PENDING_PODS"
+          if [ "$RUNNING_PODS" -ge "$POD_CAPACITY" ]; then
+            echo "  ⚠️  WARNING: Node is at pod capacity! Cannot schedule more pods."
+            echo "  💡 Solution: Increase max pods per node or upgrade to larger instance types"
+          fi
+        done
+        echo ""
+        echo "=== Node Details ==="
+        kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU:.status.capacity.cpu,MEMORY:.status.capacity.memory,PODS:.status.capacity.pods,INSTANCE-TYPE:.metadata.labels.'beta\.kubernetes\.io/instance-type'
+        echo ""
+        echo "=== Pending Pods Summary ==="
+        PENDING_COUNT=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+        if [ "$PENDING_COUNT" -gt 0 ]; then
+          echo "Found $PENDING_COUNT pending pods:"
+          kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o wide
+          echo ""
+          echo "=== Pending Pod Reasons ==="
+          for pod in $(kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}'); do
+            NS=$(echo $pod | cut -d'/' -f1)
+            NAME=$(echo $pod | cut -d'/' -f2)
+            echo "Pod: $NS/$NAME"
+            kubectl describe pod $NAME -n $NS | grep -A 3 "Events:" | tail -3 || true
+          done
+        else
+          echo "No pending pods found."
+        fi
     
     - name: Deploy to ${{ matrix.namespace }} namespace
       run: |
         kubectl apply -k k8s/namespace-${{ matrix.namespace }}
+        echo "Waiting 10 seconds for pods to be created..."
+        sleep 10
         kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m || true
         kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m || true
     
@@ -399,6 +460,23 @@ jobs:
       run: |
         echo "=== Pods in ${{ matrix.namespace }} namespace ==="
         kubectl get pods -n ${{ matrix.namespace }}
+        echo ""
+        echo "=== Pod Events (for troubleshooting) ==="
+        kubectl get events -n ${{ matrix.namespace }} --sort-by='.lastTimestamp' | tail -20 || true
+        echo ""
+        echo "=== Pod Details (if pending) ==="
+        for pod in $(kubectl get pods -n ${{ matrix.namespace }} -o jsonpath='{.items[?(@.status.phase=="Pending")].metadata.name}'); do
+          if [ -n "$pod" ]; then
+            echo "--- Describing pending pod: $pod ---"
+            kubectl describe pod $pod -n ${{ matrix.namespace }} || true
+          fi
+        done
+        echo ""
+        echo "=== Resource Quotas ==="
+        kubectl get resourcequota -n ${{ matrix.namespace }} || true
+        echo ""
+        echo "=== Node Resources ==="
+        kubectl top nodes 2>/dev/null || echo "Metrics server not available"
         echo ""
         echo "=== Services in ${{ matrix.namespace }} namespace ==="
         kubectl get services -n ${{ matrix.namespace }}
