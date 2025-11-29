@@ -66,8 +66,16 @@ jobs:
       - name: Set image output
         id: image-info
         run: |
-          IMAGE=$(echo "${{ steps.meta-backend.outputs.tags }}" | head -n1)
+          # Extract the first tag from the multiline tags output
+          IMAGE=$(echo "${{ steps.meta-backend.outputs.tags }}" | head -n1 | tr -d '\n' | xargs)
+          if [ -z "$IMAGE" ]; then
+            echo "Error: Failed to extract image tag"
+            echo "Available tags:"
+            echo "${{ steps.meta-backend.outputs.tags }}"
+            exit 1
+          fi
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Backend image: $IMAGE"
 
   build-frontend:
     name: Build Frontend
@@ -109,8 +117,16 @@ jobs:
       - name: Set image output
         id: image-info
         run: |
-          IMAGE=$(echo "${{ steps.meta-frontend.outputs.tags }}" | head -n1)
+          # Extract the first tag from the multiline tags output
+          IMAGE=$(echo "${{ steps.meta-frontend.outputs.tags }}" | head -n1 | tr -d '\n' | xargs)
+          if [ -z "$IMAGE" ]; then
+            echo "Error: Failed to extract image tag"
+            echo "Available tags:"
+            echo "${{ steps.meta-frontend.outputs.tags }}"
+            exit 1
+          fi
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Frontend image: $IMAGE"
 
   cluster-setup:
     name: Setup Cluster
@@ -351,13 +367,29 @@ jobs:
           echo "  Backend: '$BACKEND_IMAGE'"
           echo "  Frontend: '$FRONTEND_IMAGE'"
           
+          # Fallback: construct image names if outputs are empty
           if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
-            echo "❌ Error: Backend image is empty"
+            echo "⚠️  Backend image output is empty, constructing from ECR..."
+            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+            BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
+            echo "✅ Constructed backend image: $BACKEND_IMAGE"
+          fi
+          
+          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
+            echo "⚠️  Frontend image output is empty, constructing from ECR..."
+            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+            FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
+            echo "✅ Constructed frontend image: $FRONTEND_IMAGE"
+          fi
+          
+          # Final validation
+          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
+            echo "❌ Error: Backend image is still empty after fallback"
             exit 1
           fi
           
           if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
-            echo "❌ Error: Frontend image is empty"
+            echo "❌ Error: Frontend image is still empty after fallback"
             exit 1
           fi
           
