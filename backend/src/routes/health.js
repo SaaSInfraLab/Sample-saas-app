@@ -1,6 +1,32 @@
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../config/database');
+const { pool, checkPoolHealth, connectWithRetry, isConnected } = require('../config/database');
+
+/**
+ * Execute query with proper timeout and cancellation
+ */
+async function queryWithTimeout(query, params = [], timeoutMs = 3000) {
+  const client = await pool.connect();
+  let timeoutId;
+  
+  try {
+    const queryPromise = client.query(query, params);
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`Database query timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    
+    const result = await Promise.race([queryPromise, timeoutPromise]);
+    clearTimeout(timeoutId);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 /**
  * Health check endpoint
@@ -8,12 +34,7 @@ const { pool } = require('../config/database');
 router.get('/', async (req, res) => {
   try {
     // Check database connection with timeout
-    const queryPromise = pool.query('SELECT 1');
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Database query timeout')), 5000)
-    );
-    
-    await Promise.race([queryPromise, timeoutPromise]);
+    await queryWithTimeout('SELECT 1', [], 3000);
     
     res.json({
       status: 'healthy',
@@ -24,6 +45,7 @@ router.get('/', async (req, res) => {
   } catch (error) {
     // Return 200 even if DB is down - app is still running
     // This prevents Kubernetes from killing the pod
+    console.error('Health check failed:', error.message);
     res.status(200).json({
       status: 'degraded',
       timestamp: new Date().toISOString(),
@@ -39,19 +61,28 @@ router.get('/', async (req, res) => {
  */
 router.get('/ready', async (req, res) => {
   try {
-    // Check database connection with timeout
-    const queryPromise = pool.query('SELECT 1');
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Database query timeout')), 5000)
-    );
+    // Check pool state first
+    if (!isConnected) {
+      console.log('Pool not connected, attempting to reconnect...');
+      const connected = await connectWithRetry(3);
+      if (!connected) {
+        return res.status(503).json({
+          status: 'not ready',
+          timestamp: new Date().toISOString(),
+          error: 'Database connection failed after retries',
+        });
+      }
+    }
     
-    await Promise.race([queryPromise, timeoutPromise]);
+    // Check database connection with timeout (3s for faster failure detection)
+    await queryWithTimeout('SELECT 1', [], 3000);
     
     res.json({
       status: 'ready',
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
+    console.error('Readiness check failed:', error.message);
     res.status(503).json({
       status: 'not ready',
       timestamp: new Date().toISOString(),
