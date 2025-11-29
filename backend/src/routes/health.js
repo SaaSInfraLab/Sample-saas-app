@@ -5,7 +5,7 @@ const { pool } = require('../config/database');
 /**
  * Health check endpoint
  */
-router.get('/health', async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     // Check database connection
     await pool.query('SELECT 1');
