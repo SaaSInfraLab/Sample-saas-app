@@ -223,8 +223,54 @@ jobs:
         run: |
           BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
           FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
-          find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|image:.*task-management-backend.*|image: $BACKEND_IMAGE|g" {} \;
-          find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|image:.*task-management-frontend.*|image: $FRONTEND_IMAGE|g" {} \;
+          
+          echo "Received image values:"
+          echo "  Backend: '$BACKEND_IMAGE'"
+          echo "  Frontend: '$FRONTEND_IMAGE'"
+          
+          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
+            echo "❌ Error: Backend image is empty"
+            exit 1
+          fi
+          
+          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
+            echo "❌ Error: Frontend image is empty"
+            exit 1
+          fi
+          
+          # Extract image name and tag from full image path
+          BACKEND_NAME=$(echo "$BACKEND_IMAGE" | cut -d: -f1)
+          BACKEND_TAG=$(echo "$BACKEND_IMAGE" | cut -d: -f2)
+          FRONTEND_NAME=$(echo "$FRONTEND_IMAGE" | cut -d: -f1)
+          FRONTEND_TAG=$(echo "$FRONTEND_IMAGE" | cut -d: -f2)
+          
+          echo "Parsed images:"
+          echo "  Backend: $BACKEND_NAME:$BACKEND_TAG"
+          echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
+          
+          # Update kustomization.yaml with the correct image tags
+          KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
+          if [ -f "$KUSTOM_FILE" ]; then
+            echo "Updating kustomization.yaml with new image tags"
+            # Update backend image (yq v4 syntax)
+            yq -i ".images[0].newName = \"$BACKEND_NAME\"" "$KUSTOM_FILE"
+            yq -i ".images[0].newTag = \"$BACKEND_TAG\"" "$KUSTOM_FILE"
+            # Update frontend image
+            yq -i ".images[1].newName = \"$FRONTEND_NAME\"" "$KUSTOM_FILE"
+            yq -i ".images[1].newTag = \"$FRONTEND_TAG\"" "$KUSTOM_FILE"
+            echo "✅ Kustomization updated successfully"
+            echo "Updated kustomization.yaml:"
+            cat "$KUSTOM_FILE"
+          else
+            echo "⚠️  Warning: kustomization.yaml not found, updating deployment files directly"
+            # Fallback: update deployment files directly
+            if [ -f "k8s/namespace-${{ matrix.namespace }}/backend-deployment.yaml" ]; then
+              sed -i "s|image: task-management-backend.*|image: $BACKEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/backend-deployment.yaml"
+            fi
+            if [ -f "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml" ]; then
+              sed -i "s|image: task-management-frontend.*|image: $FRONTEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml"
+            fi
+          fi
 
       - name: Deploy
         run: |
