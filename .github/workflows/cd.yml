@@ -180,20 +180,56 @@ jobs:
 
       - name: Get RDS Secret ARN
         if: matrix.namespace == 'platform'
+        timeout-minutes: 5
         run: |
-          aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate
-          RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate)
-          if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ]; then
-            echo "Error: RDS secret ARN not found in Terraform state"
+          set -e
+          echo "📥 Downloading Terraform state from S3..."
+          aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate || {
+            echo "❌ Failed to download Terraform state"
+            exit 1
+          }
+          
+          echo "✅ Terraform state downloaded successfully"
+          echo "📊 Extracting RDS secret ARN..."
+          
+          RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate || echo "")
+          
+          if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ] || [ "$RDS_SECRET_ARN" == "" ]; then
+            echo "❌ Error: RDS secret ARN not found in Terraform state"
+            echo "Available outputs:"
+            jq '.outputs | keys' /tmp/terraform.tfstate || echo "Could not parse outputs"
             exit 1
           fi
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          
+          echo "✅ RDS Secret ARN found: ${RDS_SECRET_ARN:0:50}..."
+          
+          echo "🔍 Getting AWS Account ID..."
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text || echo "")
+          
+          if [ -z "$AWS_ACCOUNT_ID" ]; then
+            echo "❌ Error: Failed to get AWS Account ID"
+            exit 1
+          fi
+          
+          echo "✅ AWS Account ID: $AWS_ACCOUNT_ID"
+          
           echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
           echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
-          if [ -f "k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml" ]; then
-            sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
-            sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+          
+          SECRETS_FILE="k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml"
+          if [ -f "$SECRETS_FILE" ]; then
+            echo "📝 Updating $SECRETS_FILE with actual values..."
+            # Escape special characters in sed replacement
+            RDS_SECRET_ARN_ESC=$(echo "$RDS_SECRET_ARN" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            AWS_ACCOUNT_ID_ESC=$(echo "$AWS_ACCOUNT_ID" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN_ESC|g" "$SECRETS_FILE"
+            sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID_ESC|g" "$SECRETS_FILE"
+            echo "✅ Secrets file updated successfully"
+          else
+            echo "⚠️  Warning: $SECRETS_FILE not found"
           fi
+          
+          echo "✅ Step completed successfully"
 
       - name: Setup Secrets (Platform)
         if: matrix.namespace == 'platform'
