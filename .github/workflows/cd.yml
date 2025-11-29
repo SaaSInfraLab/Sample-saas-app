@@ -287,19 +287,30 @@ jobs:
           echo "✅ Secrets setup completed"
 
       - name: Remove ServiceMonitor if needed
+        timeout-minutes: 2
         run: |
+          set -e
+          echo "🔍 Checking for ServiceMonitor CRD..."
           if ! kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
-            rm -f k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml
-            yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml 2>/dev/null || \
-            sed -i '/servicemonitor.yaml/d' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml
+            echo "⚠️  ServiceMonitor CRD not found, removing references..."
+            rm -f k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml || true
+            if [ -f "k8s/namespace-${{ matrix.namespace }}/kustomization.yaml" ]; then
+              yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml 2>/dev/null || \
+              sed -i '/servicemonitor.yaml/d' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml || true
+            fi
+            echo "✅ ServiceMonitor references removed"
+          else
+            echo "✅ ServiceMonitor CRD exists, keeping manifest"
           fi
 
       - name: Update image tags
+        timeout-minutes: 5
         run: |
+          set -e
           BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
           FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
           
-          echo "Received image values:"
+          echo "📦 Received image values:"
           echo "  Backend: '$BACKEND_IMAGE'"
           echo "  Frontend: '$FRONTEND_IMAGE'"
           
@@ -319,23 +330,33 @@ jobs:
           FRONTEND_NAME=$(echo "$FRONTEND_IMAGE" | cut -d: -f1)
           FRONTEND_TAG=$(echo "$FRONTEND_IMAGE" | cut -d: -f2)
           
-          echo "Parsed images:"
+          echo "📊 Parsed images:"
           echo "  Backend: $BACKEND_NAME:$BACKEND_TAG"
           echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
           
           # Update kustomization.yaml with the correct image tags
           KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
           if [ -f "$KUSTOM_FILE" ]; then
-            echo "Updating kustomization.yaml with new image tags"
+            echo "📝 Updating kustomization.yaml with new image tags..."
             # Update backend image (yq v4 syntax)
-            yq -i ".images[0].newName = \"$BACKEND_NAME\"" "$KUSTOM_FILE"
-            yq -i ".images[0].newTag = \"$BACKEND_TAG\"" "$KUSTOM_FILE"
+            yq -i ".images[0].newName = \"$BACKEND_NAME\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update backend image name"
+              exit 1
+            }
+            yq -i ".images[0].newTag = \"$BACKEND_TAG\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update backend image tag"
+              exit 1
+            }
             # Update frontend image
-            yq -i ".images[1].newName = \"$FRONTEND_NAME\"" "$KUSTOM_FILE"
-            yq -i ".images[1].newTag = \"$FRONTEND_TAG\"" "$KUSTOM_FILE"
+            yq -i ".images[1].newName = \"$FRONTEND_NAME\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update frontend image name"
+              exit 1
+            }
+            yq -i ".images[1].newTag = \"$FRONTEND_TAG\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update frontend image tag"
+              exit 1
+            }
             echo "✅ Kustomization updated successfully"
-            echo "Updated kustomization.yaml:"
-            cat "$KUSTOM_FILE"
           else
             echo "⚠️  Warning: kustomization.yaml not found, updating deployment files directly"
             # Fallback: update deployment files directly
@@ -346,14 +367,36 @@ jobs:
               sed -i "s|image: task-management-frontend.*|image: $FRONTEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml"
             fi
           fi
+          echo "✅ Image tags updated successfully"
 
       - name: Deploy
+        timeout-minutes: 15
         run: |
-          kubectl apply -k k8s/namespace-${{ matrix.namespace }}
-          kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m
-          kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m
+          set -e
+          echo "🚀 Deploying to ${{ matrix.namespace }} namespace..."
+          kubectl apply -k k8s/namespace-${{ matrix.namespace }} || {
+            echo "❌ Failed to apply kustomization"
+            exit 1
+          }
+          echo "⏳ Waiting for backend deployment..."
+          kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m || {
+            echo "❌ Backend deployment failed or timed out"
+            kubectl describe deployment backend -n ${{ matrix.namespace }}
+            exit 1
+          }
+          echo "⏳ Waiting for frontend deployment..."
+          kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m || {
+            echo "❌ Frontend deployment failed or timed out"
+            kubectl describe deployment frontend -n ${{ matrix.namespace }}
+            exit 1
+          }
+          echo "✅ Deployment completed successfully"
 
       - name: Verify
+        timeout-minutes: 2
         run: |
+          set -e
+          echo "🔍 Verifying deployment..."
           kubectl get pods -n ${{ matrix.namespace }}
           kubectl get services -n ${{ matrix.namespace }}
+          echo "✅ Verification complete"
