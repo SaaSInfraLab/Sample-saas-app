@@ -231,6 +231,7 @@ jobs:
         run: |
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
           echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+          
 
       - name: Install tools
         timeout-minutes: 5
