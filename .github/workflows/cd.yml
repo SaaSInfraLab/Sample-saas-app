@@ -447,18 +447,57 @@ jobs:
             echo "❌ Failed to apply kustomization"
             exit 1
           }
+          
+          echo "⏳ Waiting 10 seconds for pods to be created..."
+          sleep 10
+          
+          echo "📦 Checking pod status..."
+          kubectl get pods -n ${{ matrix.namespace }} -o wide
+          
           echo "⏳ Waiting for backend deployment..."
-          kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m || {
+          if ! kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m; then
             echo "❌ Backend deployment failed or timed out"
+            echo ""
+            echo "=== Backend Deployment Details ==="
             kubectl describe deployment backend -n ${{ matrix.namespace }}
+            echo ""
+            echo "=== Backend Pod Status ==="
+            kubectl get pods -n ${{ matrix.namespace }} -l app=backend
+            echo ""
+            echo "=== Backend Pod Events ==="
+            for pod in $(kubectl get pods -n ${{ matrix.namespace }} -l app=backend -o jsonpath='{.items[*].metadata.name}'); do
+              echo "Pod: $pod"
+              kubectl describe pod "$pod" -n ${{ matrix.namespace }} | tail -20
+              echo ""
+              echo "Pod logs:"
+              kubectl logs "$pod" -n ${{ matrix.namespace }} --tail=50 || echo "Could not retrieve logs"
+              echo "---"
+            done
             exit 1
-          }
+          fi
+          
           echo "⏳ Waiting for frontend deployment..."
-          kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m || {
+          if ! kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m; then
             echo "❌ Frontend deployment failed or timed out"
+            echo ""
+            echo "=== Frontend Deployment Details ==="
             kubectl describe deployment frontend -n ${{ matrix.namespace }}
+            echo ""
+            echo "=== Frontend Pod Status ==="
+            kubectl get pods -n ${{ matrix.namespace }} -l app=frontend
+            echo ""
+            echo "=== Frontend Pod Events ==="
+            for pod in $(kubectl get pods -n ${{ matrix.namespace }} -l app=frontend -o jsonpath='{.items[*].metadata.name}'); do
+              echo "Pod: $pod"
+              kubectl describe pod "$pod" -n ${{ matrix.namespace }} | tail -20
+              echo ""
+              echo "Pod logs:"
+              kubectl logs "$pod" -n ${{ matrix.namespace }} --tail=50 || echo "Could not retrieve logs"
+              echo "---"
+            done
             exit 1
-          }
+          fi
+          
           echo "✅ Deployment completed successfully"
 
       - name: Verify
