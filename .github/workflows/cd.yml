@@ -182,12 +182,18 @@ jobs:
         if: matrix.namespace == 'platform'
         run: |
           aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate
-          RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value' /tmp/terraform.tfstate)
+          RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate)
+          if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ]; then
+            echo "Error: RDS secret ARN not found in Terraform state"
+            exit 1
+          fi
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
           echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
-          sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
-          sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+          if [ -f "k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml" ]; then
+            sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+            sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID|g" k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml
+          fi
 
       - name: Setup Secrets (Platform)
         if: matrix.namespace == 'platform'
