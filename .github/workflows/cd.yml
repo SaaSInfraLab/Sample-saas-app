@@ -26,48 +26,10 @@ jobs:
       - name: Verify trigger
         run: echo "✅ Proceeding with deployment"
 
-  check-changes:
-    name: Check for Code Changes
-    runs-on: ubuntu-latest
-    needs: [check-ci-status]
-    outputs:
-      backend-changed: ${{ steps.filter.outputs.backend }}
-      frontend-changed: ${{ steps.filter.outputs.frontend }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch full history for path comparison
-      - uses: dorny/paths-filter@v2
-        id: filter
-        with:
-          base: ${{ github.event.workflow_run.head_branch || github.ref }}
-          filters: |
-            backend:
-              - 'backend/src/**'
-              - 'backend/Dockerfile'
-              - 'backend/package*.json'
-              - 'backend/.dockerignore'
-            frontend:
-              - 'frontend/src/**'
-              - 'frontend/Dockerfile'
-              - 'frontend/package*.json'
-              - 'frontend/.dockerignore'
-      - name: Show change detection results
-        run: |
-          echo "Backend changed: ${{ steps.filter.outputs.backend }}"
-          echo "Frontend changed: ${{ steps.filter.outputs.frontend }}"
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "ℹ️  Manual trigger - will build all images"
-          fi
-
   build-backend:
     name: Build Backend
-    needs: [check-ci-status, check-changes]
+    needs: [check-ci-status]
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      needs.check-changes.outputs.backend == 'true'
     permissions:
       id-token: write
       contents: read
@@ -117,12 +79,8 @@ jobs:
 
   build-frontend:
     name: Build Frontend
-    needs: [check-ci-status, check-changes]
+    needs: [check-ci-status]
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      needs.check-changes.outputs.frontend == 'true'
     permissions:
       id-token: write
       contents: read
@@ -403,35 +361,27 @@ jobs:
         timeout-minutes: 5
         run: |
           set -e
+          BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
+          FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
           
-          # Determine which images to use based on whether builds were skipped
-          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
-          
-          if [ "${{ needs.build-backend.result }}" == "skipped" ]; then
-            echo "ℹ️  Backend build was skipped (no code changes), using latest image"
-            BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
-          else
-            BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
-            if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
-              echo "⚠️  Backend image output is empty, using latest as fallback..."
-              BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
-            fi
-          fi
-          
-          if [ "${{ needs.build-frontend.result }}" == "skipped" ]; then
-            echo "ℹ️  Frontend build was skipped (no code changes), using latest image"
-            FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
-          else
-            FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
-            if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
-              echo "⚠️  Frontend image output is empty, using latest as fallback..."
-              FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
-            fi
-          fi
-          
-          echo "📦 Final image values:"
+          echo "📦 Received image values:"
           echo "  Backend: '$BACKEND_IMAGE'"
           echo "  Frontend: '$FRONTEND_IMAGE'"
+          
+          # Fallback: construct image names if outputs are empty
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          
+          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
+            echo "⚠️  Backend image output is empty, constructing from ECR..."
+            BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
+            echo "✅ Constructed backend image: $BACKEND_IMAGE"
+          fi
+          
+          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
+            echo "⚠️  Frontend image output is empty, constructing from ECR..."
+            FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
+            echo "✅ Constructed frontend image: $FRONTEND_IMAGE"
+          fi
           
           # Final validation
           if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
