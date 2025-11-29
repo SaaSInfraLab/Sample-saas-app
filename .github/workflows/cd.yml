@@ -159,6 +159,7 @@ jobs:
       id-token: write
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         namespace: [platform, analytics]
     steps:
@@ -174,10 +175,28 @@ jobs:
           echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
 
       - name: Install tools
+        timeout-minutes: 5
         run: |
-          sudo apt-get update && sudo apt-get install -y jq
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+          set -e
+          echo "🔧 Installing required tools..."
+          sudo apt-get update && sudo apt-get install -y jq || {
+            echo "❌ Failed to install jq"
+            exit 1
+          }
+          echo "✅ jq installed"
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 || {
+            echo "❌ Failed to download yq"
+            exit 1
+          }
+          sudo chmod +x /usr/local/bin/yq || {
+            echo "❌ Failed to make yq executable"
+            exit 1
+          }
+          echo "✅ yq installed"
+          # Verify tools are available
+          jq --version
+          yq --version
+          echo "✅ All tools installed and verified"
 
       - name: Get RDS Secret ARN
         if: matrix.namespace == 'platform'
@@ -289,19 +308,37 @@ jobs:
       - name: Remove ServiceMonitor if needed
         timeout-minutes: 2
         run: |
-          set -e
+          set +e  # Don't exit on error for this step
           echo "🔍 Checking for ServiceMonitor CRD..."
           if ! kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
             echo "⚠️  ServiceMonitor CRD not found, removing references..."
-            rm -f k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml || true
-            if [ -f "k8s/namespace-${{ matrix.namespace }}/kustomization.yaml" ]; then
-              yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml 2>/dev/null || \
-              sed -i '/servicemonitor.yaml/d' k8s/namespace-${{ matrix.namespace }}/kustomization.yaml || true
+            SERVICEMONITOR_FILE="k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml"
+            KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
+            
+            # Remove servicemonitor.yaml file if it exists
+            if [ -f "$SERVICEMONITOR_FILE" ]; then
+              rm -f "$SERVICEMONITOR_FILE"
+              echo "✅ Removed servicemonitor.yaml file"
+            fi
+            
+            # Remove from kustomization.yaml if it exists
+            if [ -f "$KUSTOM_FILE" ]; then
+              # Try yq first, fallback to sed
+              if command -v yq >/dev/null 2>&1; then
+                yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' "$KUSTOM_FILE" 2>/dev/null && \
+                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using yq" || \
+                sed -i '/servicemonitor.yaml/d' "$KUSTOM_FILE" && \
+                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using sed"
+              else
+                sed -i '/servicemonitor.yaml/d' "$KUSTOM_FILE" && \
+                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using sed"
+              fi
             fi
             echo "✅ ServiceMonitor references removed"
           else
             echo "✅ ServiceMonitor CRD exists, keeping manifest"
           fi
+          set -e  # Re-enable exit on error
 
       - name: Update image tags
         timeout-minutes: 5
