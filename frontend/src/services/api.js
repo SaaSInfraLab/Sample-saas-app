@@ -1,11 +1,13 @@
 import axios from 'axios';
 
-// Use relative URLs to leverage Vite proxy in development
+// Use relative URLs to leverage nginx proxy in production
+// In production, nginx proxies /api requests to the backend service
+// In development, Vite proxy handles this
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 // Create axios instance
 const api = axios.create({
-  baseURL: API_URL || (import.meta.env.DEV ? '' : 'http://localhost:3000'),
+  baseURL: API_URL, // Empty string = relative URLs, which work with nginx proxy
   headers: {
     'Content-Type': 'application/json',
   },
