@@ -349,6 +349,69 @@ jobs:
           
           echo "✅ Secrets verification completed"
 
+      - name: Initialize Database
+        if: matrix.namespace == 'platform'
+        timeout-minutes: 5
+        run: |
+          set -e
+          echo "🗄️  Initializing database..."
+          
+          # Check if init job already exists and completed successfully
+          if kubectl get job init-rds-database -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            JOB_STATUS=$(kubectl get job init-rds-database -n ${{ matrix.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' || echo "")
+            if [ "$JOB_STATUS" == "True" ]; then
+              echo "✅ Database initialization job already completed successfully"
+              echo "📋 Job logs:"
+              kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=10 || echo "Could not retrieve logs"
+              exit 0
+            else
+              echo "⚠️  Database initialization job exists but not completed, checking status..."
+              kubectl get job init-rds-database -n ${{ matrix.namespace }}
+              # Check if job is still running
+              JOB_ACTIVE=$(kubectl get job init-rds-database -n ${{ matrix.namespace }} -o jsonpath='{.status.active}' || echo "0")
+              if [ "$JOB_ACTIVE" != "0" ] && [ -n "$JOB_ACTIVE" ]; then
+                echo "⏳ Database initialization job is still running, waiting for completion..."
+                kubectl wait --for=condition=complete --timeout=5m job/init-rds-database -n ${{ matrix.namespace }} || {
+                  echo "❌ Database initialization job timed out or failed"
+                  kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=50
+                  exit 1
+                }
+                echo "✅ Database initialization job completed"
+                exit 0
+              else
+                echo "⚠️  Job exists but not active, deleting and recreating..."
+                kubectl delete job init-rds-database -n ${{ matrix.namespace }} || true
+              fi
+            fi
+          fi
+          
+          # Apply the init job
+          echo "📦 Applying database initialization job..."
+          kubectl apply -f k8s/init-db-job.yaml || {
+            echo "❌ Failed to apply init-db-job.yaml"
+            exit 1
+          }
+          
+          # Wait for job to complete
+          echo "⏳ Waiting for database initialization to complete (max 5 minutes)..."
+          if ! kubectl wait --for=condition=complete --timeout=5m job/init-rds-database -n ${{ matrix.namespace }}; then
+            echo "❌ Database initialization job failed or timed out"
+            echo ""
+            echo "=== Job Status ==="
+            kubectl get job init-rds-database -n ${{ matrix.namespace }}
+            echo ""
+            echo "=== Job Pod Status ==="
+            kubectl get pods -n ${{ matrix.namespace }} -l job-name=init-rds-database
+            echo ""
+            echo "=== Job Pod Logs ==="
+            kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=100 || echo "Could not retrieve logs"
+            exit 1
+          fi
+          
+          echo "✅ Database initialization completed successfully"
+          echo "📋 Final job logs:"
+          kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=20
+
       - name: Remove ServiceMonitor if needed
         timeout-minutes: 2
         run: |

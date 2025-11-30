@@ -21,22 +21,22 @@ spec:
         - name: DB_HOST
           valueFrom:
             secretKeyRef:
-              name: postgresql-secret
+              name: db-credentials
               key: db-host
         - name: DB_USER
           valueFrom:
             secretKeyRef:
-              name: postgresql-secret
-              key: db-user
+              name: db-credentials
+              key: db-username
         - name: DB_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: postgresql-secret
+              name: db-credentials
               key: db-password
         - name: DB_NAME
           valueFrom:
             secretKeyRef:
-              name: postgresql-secret
+              name: db-credentials
               key: db-name
         command:
         - /bin/sh
@@ -108,7 +108,7 @@ data:
                 updated_at TIMESTAMP DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_users_email ON %I.users(email);
-        ', schema_name);
+        ', schema_name, schema_name);
     END;
     $$ LANGUAGE plpgsql;
     
@@ -135,7 +135,7 @@ data:
                 FOREIGN KEY (created_by) REFERENCES %I.users(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON %I.tasks(status);
-        ', schema_name, schema_name);
+        ', schema_name, schema_name, schema_name);
     END;
     $$ LANGUAGE plpgsql;
     
