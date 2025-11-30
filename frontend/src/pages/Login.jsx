@@ -36,9 +36,12 @@ function Login() {
       login(response.data.user, response.data.token);
       window.location.href = '/';
     } catch (err) {
-      setError(
-        err.response?.data?.error || 'An error occurred. Please try again.'
-      );
+      console.error('Auth error:', err);
+      console.error('Error response:', err.response);
+      console.error('Error message:', err.message);
+      const errorMessage = err.response?.data?.error || err.message || 'An error occurred. Please try again.';
+      console.error('Setting error message:', errorMessage);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
