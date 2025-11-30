@@ -36,8 +36,10 @@ kubeconfig
 # Backups
 backups/
 *.dump
+database/backup/
 
 # Testing
 coverage/
 .nyc_output/
 
+monitoring/*

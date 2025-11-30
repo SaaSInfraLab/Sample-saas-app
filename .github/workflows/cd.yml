@@ -322,6 +322,33 @@ jobs:
           
           echo "✅ Secrets setup completed"
 
+      - name: Setup Secrets (Analytics)
+        if: matrix.namespace == 'analytics'
+        timeout-minutes: 2
+        run: |
+          set -e
+          echo "🔐 Verifying secrets for analytics namespace..."
+          
+          # Verify postgresql-secret exists (created by Terraform)
+          if ! kubectl get secret postgresql-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "⚠️  Warning: postgresql-secret not found in analytics namespace"
+            echo "⚠️  This secret should be created by Terraform tenants module"
+            echo "⚠️  Run: cd tenants && terraform apply -var-file=\"../tenants.tfvars\""
+            echo "⚠️  Continuing deployment, but pods may fail without this secret..."
+          else
+            echo "✅ postgresql-secret found in analytics namespace"
+          fi
+          
+          # Verify backend-secret exists
+          if ! kubectl get secret backend-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "⚠️  Warning: backend-secret not found in analytics namespace"
+            echo "⚠️  This secret should be created by Terraform tenants module"
+          else
+            echo "✅ backend-secret found in analytics namespace"
+          fi
+          
+          echo "✅ Secrets verification completed"
+
       - name: Remove ServiceMonitor if needed
         timeout-minutes: 2
         run: |
@@ -440,7 +467,7 @@ jobs:
           echo "✅ Image tags updated successfully"
 
       - name: Deploy
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           set -e
           echo "🚀 Deploying to ${{ matrix.namespace }} namespace..."
@@ -456,7 +483,9 @@ jobs:
           kubectl get pods -n ${{ matrix.namespace }} -o wide
           
           echo "⏳ Waiting for backend deployment..."
-          if ! kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m; then
+          # Increased timeout to 10m to account for database connection timeouts and health checks
+          # Database connection: 15s timeout, readiness probe: 20s initial + up to 3 failures (10s each)
+          if ! kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=10m; then
             echo "❌ Backend deployment failed or timed out"
             echo ""
             echo "=== Backend Deployment Details ==="
@@ -478,7 +507,8 @@ jobs:
           fi
           
           echo "⏳ Waiting for frontend deployment..."
-          if ! kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m; then
+          # Increased timeout to 10m for consistency and to handle slow image pulls
+          if ! kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=10m; then
             echo "❌ Frontend deployment failed or timed out"
             echo ""
             echo "=== Frontend Deployment Details ==="

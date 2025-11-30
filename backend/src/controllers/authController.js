@@ -22,10 +22,6 @@ async function register(req, res) {
       return res.status(409).json({ error: 'User already exists' });
     }
 
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({ error: 'User already exists' });
-    }
-
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 

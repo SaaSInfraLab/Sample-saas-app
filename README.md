@@ -41,3 +41,29 @@ kubectl port-forward -n platform service/frontend-service 8080:80
 - JWT authentication
 - Task CRUD operations
 - Health checks and metrics
+- SSL/TLS database connections (required for RDS)
+- Optimized timeouts for database connections and health checks
+
+## Health Check Endpoints
+
+- `GET /health` - General health status with database connectivity
+- `GET /health/live` - Liveness probe (always returns 200)
+- `GET /health/ready` - Readiness probe (checks database connection with 18s timeout wrapper)
+
+## Configuration
+
+### Database Connection
+- **Connection Timeout**: 15 seconds
+- **SSL**: Enabled (required for RDS)
+- **Connection Pool**: Min 2, Max 10 connections
+
+### Kubernetes Probes
+- **Readiness Probe**:
+  - Initial Delay: 20 seconds
+  - Timeout: 20 seconds
+  - Period: 10 seconds
+  - Failure Threshold: 3
+- **Liveness Probe**:
+  - Initial Delay: 30 seconds
+  - Timeout: 3 seconds
+  - Period: 10 seconds

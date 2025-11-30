@@ -16,6 +16,9 @@ const pool = new Pool({
   max: parseInt(process.env.DB_POOL_MAX || '10', 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 15000, // Increased to 15s to match probe timeout
+  ssl: {
+    rejectUnauthorized: false // Required for RDS connections without custom CA
+  }
 });
 
 // Test database connection

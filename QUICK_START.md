@@ -86,11 +86,17 @@ Frontend will run on: http://localhost:5173
 ### Check Backend
 
 ```bash
-# Health check
+# General health check
 curl http://localhost:3000/health
 
 # Should return:
 # {"status":"healthy","timestamp":"...","uptime":...,"database":"connected"}
+
+# Liveness check (always returns 200)
+curl http://localhost:3000/health/live
+
+# Readiness check (checks database connection)
+curl http://localhost:3000/health/ready
 ```
 
 ### Check Frontend

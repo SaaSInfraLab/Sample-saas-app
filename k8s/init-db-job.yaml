@@ -17,24 +17,45 @@ spec:
           limits:
             cpu: "200m"
             memory: "128Mi"
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: db-password
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: db-name
         command:
         - /bin/sh
         - -c
         - |
           echo "Initializing RDS database..."
-          export PGPASSWORD=changeme
+          export PGPASSWORD=${DB_PASSWORD}
           
           echo "Running migration 001_create_tenants.sql..."
-          psql -h saas-infra-lab-dev-postgres.c0ruyeiq4fej.us-east-1.rds.amazonaws.com -U taskuser -d taskdb -f /migrations/001_create_tenants.sql
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /migrations/001_create_tenants.sql
           
           echo "Running migration 002_create_users.sql..."
-          psql -h saas-infra-lab-dev-postgres.c0ruyeiq4fej.us-east-1.rds.amazonaws.com -U taskuser -d taskdb -f /migrations/002_create_users.sql
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /migrations/002_create_users.sql
           
           echo "Running migration 003_create_tasks.sql..."
-          psql -h saas-infra-lab-dev-postgres.c0ruyeiq4fej.us-east-1.rds.amazonaws.com -U taskuser -d taskdb -f /migrations/003_create_tasks.sql
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /migrations/003_create_tasks.sql
           
           echo "Verifying database..."
-          psql -h saas-infra-lab-dev-postgres.c0ruyeiq4fej.us-east-1.rds.amazonaws.com -U taskuser -d taskdb -c "SELECT COUNT(*) FROM tenants; SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'tenant_%';"
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -c "SELECT COUNT(*) FROM tenants; SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'tenant_%';"
           
           echo "Database initialization complete!"
         volumeMounts:

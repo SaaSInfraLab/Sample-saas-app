@@ -3,7 +3,7 @@ const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const { ensureTenantIsolation } = require('../middleware/tenant-isolation');
 const { getTenantConfig } = require('../config/tenants');
-const { pool } = require('../config/database');
+const { pool, getTenantSchema } = require('../config/database');
 
 /**
  * Get tenant information and resource usage
@@ -28,20 +28,27 @@ router.get('/info', authenticateToken, ensureTenantIsolation, (req, res) => {
 
 /**
  * Get tenant resource usage
- * This would typically query Kubernetes metrics API or Prometheus
- * For now, we return placeholder data
+ * Note: Currently returns placeholder data for CPU/memory/pods
+ * Future: Integrate with Kubernetes metrics API or Prometheus for actual usage
  */
 router.get('/usage', authenticateToken, ensureTenantIsolation, async (req, res) => {
   try {
-    // TODO: Query Kubernetes metrics or Prometheus for actual usage
-    // For now, return placeholder data
+    // Note: Currently returns placeholder data for CPU/memory/pods
+    // Future: Integrate with Kubernetes metrics API or Prometheus for actual usage
     const tenantConfig = getTenantConfig(req.tenantId);
     
-    // Get database size (example)
-    const dbSizeQuery = `
-      SELECT pg_size_pretty(pg_database_size(current_database())) as size
+    // Get tenant-specific schema size
+    // Note: pg_tables is a system catalog, so we query it directly with the schema name
+    const schema = getTenantSchema(req.tenantId);
+    const schemaSizeQuery = `
+      SELECT pg_size_pretty(COALESCE(
+        (SELECT sum(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename)))
+         FROM pg_catalog.pg_tables 
+         WHERE schemaname = $1), 0
+      )) as size
     `;
-    const dbResult = await pool.query(dbSizeQuery);
+    // Query system catalog directly (not tenant-isolated, but safe as it's read-only metadata)
+    const dbResult = await pool.query(schemaSizeQuery, [schema]);
     
     res.json({
       tenant: req.tenantId,

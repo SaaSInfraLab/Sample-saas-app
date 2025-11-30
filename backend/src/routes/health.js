@@ -60,28 +60,48 @@ router.get('/', async (req, res) => {
  * Readiness check endpoint
  */
 router.get('/ready', async (req, res) => {
+  const READINESS_TIMEOUT = 18000; // 18 seconds - slightly less than probe timeout of 20s
+  let timeoutId;
+
   try {
-    // Check pool state first
-    if (!isConnected) {
-      console.log('Pool not connected, attempting to reconnect...');
-      const connected = await connectWithRetry(3);
-      if (!connected) {
-        return res.status(503).json({
-          status: 'not ready',
-          timestamp: new Date().toISOString(),
-          error: 'Database connection failed after retries',
-        });
+    const healthCheckPromise = (async () => {
+      // Check pool state first
+      if (!isConnected) {
+        console.log('Pool not connected, attempting to reconnect...');
+        const connected = await connectWithRetry(3);
+        if (!connected) {
+          return false;
+        }
       }
-    }
-    
-    // Check database connection with timeout (3s for faster failure detection)
-    await queryWithTimeout('SELECT 1', [], 3000);
-    
-    res.json({
-      status: 'ready',
-      timestamp: new Date().toISOString(),
+      
+      // Check database connection with timeout (3s for faster failure detection)
+      await queryWithTimeout('SELECT 1', [], 3000);
+      return true;
+    })();
+
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`Readiness check timeout after ${READINESS_TIMEOUT}ms`));
+      }, READINESS_TIMEOUT);
     });
+
+    const healthy = await Promise.race([healthCheckPromise, timeoutPromise]);
+    clearTimeout(timeoutId);
+
+    if (healthy) {
+      res.json({
+        status: 'ready',
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      res.status(503).json({
+        status: 'not ready',
+        timestamp: new Date().toISOString(),
+        error: 'Database not ready',
+      });
+    }
   } catch (error) {
+    clearTimeout(timeoutId);
     console.error('Readiness check failed:', error.message);
     res.status(503).json({
       status: 'not ready',
