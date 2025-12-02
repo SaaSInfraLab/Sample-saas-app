@@ -74,22 +74,34 @@ async function connectWithRetry(maxRetries = MAX_RETRIES) {
 }
 
 function sanitizeError(error) {
-  if (!error) return error;
+  if (!error) {
+    return error;
+  }
   
-  const errorStr = error.toString();
-  const errorMessage = error.message || errorStr;
+  const errorMessage = error.message || error.toString();
+
+  let sanitized = errorMessage
+    .replace(/password authentication failed for user\s+["']([^"']+)["']/gi, 'password authentication failed for user "[REDACTED]"')
+    .replace(/authentication failed for user\s+["']?([^"'\s]+)["']?/gi, 'authentication failed for user "[REDACTED]"')
+    .replace(/user\s+["']([^"']+)["']/gi, 'user "[REDACTED]"')
+    .replace(/password\s+["']([^"']+)["']/gi, 'password "[REDACTED]"')
+    .replace(/role\s+["']([^"']+)["']/gi, 'role "[REDACTED]"');
+
+  sanitized = sanitized.replace(/["']([A-Za-z0-9+/]{8,}={0,2})["']/g, '"[REDACTED]"');
+
+  sanitized = sanitized.replace(/(?:for|user|password|with|as)\s+["']?([A-Za-z0-9+/]{8,}={0,2})["']?/gi, (match, base64Str) => {
+    return match.replace(base64Str, '[REDACTED]');
+  });
+
+  sanitized = sanitized.replace(/(?:user|password|pwd|passwd|credential|secret|token)\s*[:=]\s*["']?([^"'\s]{4,})["']?/gi, (match, value) => {
+    return match.replace(value, '[REDACTED]');
+  });
   
-  const sanitized = {
-    message: errorMessage
-      .replace(/user\s+["'][^"']+["']/gi, 'user "[REDACTED]"')
-      .replace(/password\s+["'][^"']+["']/gi, 'password "[REDACTED]"')
-      .replace(/authentication failed for user\s+["'][^"']+["']/gi, 'authentication failed for user "[REDACTED]"')
-      .replace(/role\s+["'][^"']+["']/gi, 'role "[REDACTED]"'),
+  return {
+    message: sanitized,
     code: error.code,
     name: error.name
   };
-  
-  return sanitized;
 }
 
 function getTenantSchema(tenantId) {
