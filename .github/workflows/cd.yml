@@ -390,21 +390,60 @@ jobs:
           set -e
           echo "🔐 Setting up secrets for analytics namespace..."
           
+          # Validate ANALYTICS_SECRET_ARN is set
+          ANALYTICS_SECRET_ARN="${{ secrets.ANALYTICS_SECRET_ARN }}"
+          if [ -z "$ANALYTICS_SECRET_ARN" ] || [ "$ANALYTICS_SECRET_ARN" == "" ]; then
+            echo "❌ Error: ANALYTICS_SECRET_ARN GitHub secret is not set"
+            echo "⚠️  Please configure ANALYTICS_SECRET_ARN in GitHub repository secrets"
+            exit 1
+          fi
+          
+          echo "✅ Using Analytics Secret ARN: ${ANALYTICS_SECRET_ARN:0:50}..."
+          
           # Pull secret JSON from AWS Secrets Manager
           SECRET_JSON=$(aws secretsmanager get-secret-value \
-            --secret-id ${{ secrets.ANALYTICS_SECRET_ARN }} \
+            --secret-id "$ANALYTICS_SECRET_ARN" \
             --query SecretString --output text)
           
+          if [ -z "$SECRET_JSON" ] || [ "$SECRET_JSON" == "null" ]; then
+            echo "❌ Error: Failed to retrieve secret from AWS Secrets Manager"
+            exit 1
+          fi
+          
+          echo "✅ Secret retrieved successfully"
+          
+          # Validate required fields exist in secret JSON
+          if ! echo "$SECRET_JSON" | jq -e '.username' >/dev/null 2>&1; then
+            echo "❌ Error: Secret JSON missing 'username' field"
+            exit 1
+          fi
+          if ! echo "$SECRET_JSON" | jq -e '.password' >/dev/null 2>&1; then
+            echo "❌ Error: Secret JSON missing 'password' field"
+            exit 1
+          fi
+          if ! echo "$SECRET_JSON" | jq -e '.jwt' >/dev/null 2>&1; then
+            echo "❌ Error: Secret JSON missing 'jwt' field"
+            exit 1
+          fi
+          
           # Create/update postgresql-secret
+          echo "📦 Creating/updating postgresql-secret..."
           kubectl create secret generic postgresql-secret -n analytics \
             --from-literal=db-user=$(echo "$SECRET_JSON" | jq -r '.username') \
             --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
-            --dry-run=client -o yaml | kubectl apply -f -
+            --dry-run=client -o yaml | kubectl apply -f - || {
+            echo "❌ Failed to create/update postgresql-secret"
+            exit 1
+          }
           
           # Create/update backend-secret
+          echo "📦 Creating/updating backend-secret..."
           kubectl create secret generic backend-secret -n analytics \
             --from-literal=jwt-secret=$(echo "$SECRET_JSON" | jq -r '.jwt') \
-            --dry-run=client -o yaml | kubectl apply -f -
+            --dry-run=client -o yaml | kubectl apply -f - || {
+            echo "❌ Failed to create/update backend-secret"
+            exit 1
+          }
           
           echo "✅ Analytics secrets setup completed"
 
