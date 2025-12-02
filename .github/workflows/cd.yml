@@ -235,14 +235,6 @@ jobs:
         namespace: [platform, analytics]
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Terraform Configuration
-        if: matrix.namespace == 'analytics'
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/cloudnative-saas-eks
-          path: cloudnative-saas-eks
-          # Use GITHUB_TOKEN for same org, or PAT if different org
-          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -385,70 +377,6 @@ jobs:
           
           echo "✅ Secrets setup completed"
 
-      - name: Apply Terraform Tenants Configuration
-        if: matrix.namespace == 'analytics'
-        timeout-minutes: 5
-        run: |
-          set -e
-          echo "🔧 Applying Terraform tenants configuration to ensure secrets are up to date..."
-          
-          # Install Terraform if not already installed
-          if ! command -v terraform &> /dev/null; then
-            echo "📦 Installing Terraform..."
-            TERRAFORM_VERSION="1.6.0"
-            wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
-            unzip -q terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-            sudo mv terraform /usr/local/bin/
-            rm terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-            terraform version
-          fi
-          
-          # Navigate to tenants Terraform directory
-          TERRAFORM_DIR="cloudnative-saas-eks/examples/dev-environment/tenants"
-          
-          if [ ! -d "$TERRAFORM_DIR" ]; then
-            echo "❌ Terraform tenants directory not found at: $TERRAFORM_DIR"
-            echo "Current directory: $(pwd)"
-            echo "Directory contents:"
-            ls -la
-            if [ -d "cloudnative-saas-eks" ]; then
-              echo "cloudnative-saas-eks directory exists, contents:"
-              ls -la cloudnative-saas-eks/ || true
-            fi
-            exit 1
-          fi
-          
-          cd "$TERRAFORM_DIR"
-          echo "📂 Working directory: $(pwd)"
-          echo "✅ Terraform directory found"
-          
-          # Initialize Terraform
-          echo "🔧 Initializing Terraform..."
-          # Use backend config file if it exists, otherwise use inline config
-          if [ -f "backend-dev.tfbackend" ]; then
-            terraform init -backend-config=backend-dev.tfbackend || {
-              echo "❌ Terraform init failed with backend config file"
-              exit 1
-            }
-          else
-            terraform init -backend-config="bucket=${{ env.TERRAFORM_STATE_BUCKET }}" \
-                           -backend-config="key=saas-infra-lab/dev/tenants/terraform.tfstate" \
-                           -backend-config="region=${{ env.AWS_REGION }}" || {
-              echo "❌ Terraform init failed"
-              exit 1
-            }
-          fi
-          
-          # Apply Terraform configuration
-          echo "🚀 Applying Terraform configuration..."
-          terraform apply -var-file="../tenants.tfvars" -auto-approve || {
-            echo "❌ Terraform apply failed"
-            terraform plan -var-file="../tenants.tfvars"
-            exit 1
-          }
-          
-          echo "✅ Terraform apply completed successfully"
-
       - name: Setup Secrets (Analytics)
         if: matrix.namespace == 'analytics'
         timeout-minutes: 2
@@ -456,32 +384,26 @@ jobs:
           set -e
           echo "🔐 Verifying secrets for analytics namespace..."
           
-          # Verify postgresql-secret exists (created by Terraform)
+          # Verify postgresql-secret exists (should be created by Terraform separately)
           if ! kubectl get secret postgresql-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
-            echo "❌ Error: postgresql-secret not found in analytics namespace after Terraform apply"
-            echo "This should have been created by Terraform tenants module"
+            echo "❌ Error: postgresql-secret not found in analytics namespace"
+            echo "⚠️  This secret should be created by Terraform tenants module"
+            echo "⚠️  Run Terraform apply separately: cd cloudnative-saas-eks/examples/dev-environment/tenants && terraform apply"
             exit 1
-          else
-            echo "✅ postgresql-secret found in analytics namespace"
-            # Verify the secret has correct encoding (not double-encoded)
-            DB_USER=$(kubectl get secret postgresql-secret -n ${{ matrix.namespace }} -o jsonpath='{.data.db-user}' | base64 -d)
-            if [[ "$DB_USER" == *"="* ]] && [[ "$DB_USER" =~ ^[A-Za-z0-9+/]+=*$ ]]; then
-              echo "⚠️  Warning: Secret appears to be double-encoded (contains base64-looking value: ${DB_USER:0:20}...)"
-              echo "Terraform should have fixed this, but secret may need manual correction"
-            else
-              echo "✅ Secret encoding appears correct (username: $DB_USER)"
-            fi
           fi
+          
+          echo "✅ postgresql-secret found in analytics namespace"
           
           # Verify backend-secret exists
           if ! kubectl get secret backend-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
-            echo "❌ Error: backend-secret not found in analytics namespace after Terraform apply"
+            echo "❌ Error: backend-secret not found in analytics namespace"
+            echo "⚠️  This secret should be created by Terraform tenants module"
+            echo "⚠️  Run Terraform apply separately: cd cloudnative-saas-eks/examples/dev-environment/tenants && terraform apply"
             exit 1
-          else
-            echo "✅ backend-secret found in analytics namespace"
           fi
           
-          echo "✅ Secrets verification completed"
+          echo "✅ backend-secret found in analytics namespace"
+          echo "✅ All required secrets are present - proceeding with deployment"
 
       - name: Initialize Database
         if: matrix.namespace == 'platform'
