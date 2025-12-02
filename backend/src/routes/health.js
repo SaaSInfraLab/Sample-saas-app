@@ -37,13 +37,16 @@ router.get('/', async (req, res) => {
       database: 'connected',
     });
   } catch (error) {
-    console.error('Health check failed:', error.message);
+    const sanitizedMessage = error.message
+      .replace(/user\s+["'][^"']+["']/gi, 'user "[REDACTED]"')
+      .replace(/password\s+["'][^"']+["']/gi, 'password "[REDACTED]"');
+    console.error('Health check failed:', sanitizedMessage);
     res.status(200).json({
       status: 'degraded',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       database: 'disconnected',
-      warning: error.message,
+      warning: sanitizedMessage,
     });
   }
 });
@@ -88,11 +91,14 @@ router.get('/ready', async (req, res) => {
     }
   } catch (error) {
     clearTimeout(timeoutId);
-    console.error('Readiness check failed:', error.message);
+    const sanitizedMessage = error.message
+      .replace(/user\s+["'][^"']+["']/gi, 'user "[REDACTED]"')
+      .replace(/password\s+["'][^"']+["']/gi, 'password "[REDACTED]"');
+    console.error('Readiness check failed:', sanitizedMessage);
     res.status(503).json({
       status: 'not ready',
       timestamp: new Date().toISOString(),
-      error: error.message,
+      error: sanitizedMessage,
     });
   }
 });
