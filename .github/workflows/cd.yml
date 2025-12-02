@@ -221,7 +221,7 @@ jobs:
             kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=180s
           fi
 
-  setup-shared-secrets:
+  setup-secrets:
     name: Setup Shared Secrets for Platform & Analytics
     needs: [build-backend, build-frontend, cluster-setup]
     runs-on: ubuntu-latest
@@ -253,10 +253,26 @@ jobs:
           set -e
           echo "🔐 Setting up shared secrets for platform and analytics namespaces..."
 
-          # Use the shared secret ARN
-          SHARED_SECRET_ARN="saas-infra-lab-dev-rds-credentials-8168d27041b1556b"
+          # Get RDS secret ARN from Terraform state (same approach as platform)
+          echo "📥 Downloading Terraform state from S3..."
+          aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate || {
+            echo "❌ Failed to download Terraform state"
+            exit 1
+          }
 
-          echo "✅ Using Shared Secret ARN: $SHARED_SECRET_ARN"
+          echo "✅ Terraform state downloaded successfully"
+          echo "📊 Extracting RDS secret ARN..."
+
+          SHARED_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate || echo "")
+
+          if [ -z "$SHARED_SECRET_ARN" ] || [ "$SHARED_SECRET_ARN" == "null" ] || [ "$SHARED_SECRET_ARN" == "" ]; then
+            echo "❌ Error: RDS secret ARN not found in Terraform state"
+            echo "Available outputs:"
+            jq '.outputs | keys' /tmp/terraform.tfstate || echo "Could not parse outputs"
+            exit 1
+          fi
+
+          echo "✅ Using RDS Secret ARN: ${SHARED_SECRET_ARN:0:50}..."
 
           # Pull secret JSON from AWS Secrets Manager
           SECRET_JSON=$(aws secretsmanager get-secret-value \
@@ -270,19 +286,6 @@ jobs:
 
           echo "✅ Secret retrieved successfully"
 
-          # Get JWT secret - try from secret JSON, GitHub secret, or use default
-          JWT_SECRET=""
-          if echo "$SECRET_JSON" | jq -e '.jwt' >/dev/null 2>&1; then
-            JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.jwt')
-            echo "✅ JWT secret found in shared secret"
-          elif [ -n "${{ secrets.SHARED_JWT_SECRET }}" ] && [ "${{ secrets.SHARED_JWT_SECRET }}" != "" ]; then
-            JWT_SECRET="${{ secrets.SHARED_JWT_SECRET }}"
-            echo "✅ JWT secret found in GitHub secrets"
-          else
-            JWT_SECRET="dev-jwt-secret-key-change-for-production-use-strong-random-key"
-            echo "⚠️  Using default JWT secret"
-          fi
-
           # Validate required fields exist in secret JSON
           if ! echo "$SECRET_JSON" | jq -e '.username' >/dev/null 2>&1; then
             echo "❌ Error: Secret JSON missing 'username' field"
@@ -293,18 +296,50 @@ jobs:
             exit 1
           fi
 
+          # Extract values (ensure no newlines or special characters cause issues)
+          DB_USER=$(echo "$SECRET_JSON" | jq -r '.username' | tr -d '\n\r')
+          DB_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.password' | tr -d '\n\r')
+
+          # Validate extracted values are not empty
+          if [ -z "$DB_USER" ] || [ "$DB_USER" == "null" ]; then
+            echo "❌ Error: DB username is empty"
+            exit 1
+          fi
+          if [ -z "$DB_PASSWORD" ] || [ "$DB_PASSWORD" == "null" ]; then
+            echo "❌ Error: DB password is empty"
+            exit 1
+          fi
+
+          echo "✅ Database credentials extracted (username length: ${#DB_USER}, password length: ${#DB_PASSWORD})"
+
+          # Get JWT secret - try from secret JSON, GitHub secret, or use default
+          JWT_SECRET=""
+          if echo "$SECRET_JSON" | jq -e '.jwt' >/dev/null 2>&1; then
+            JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.jwt' | tr -d '\n\r')
+            echo "✅ JWT secret found in shared secret"
+          elif [ -n "${{ secrets.SHARED_JWT_SECRET }}" ] && [ "${{ secrets.SHARED_JWT_SECRET }}" != "" ]; then
+            JWT_SECRET="${{ secrets.SHARED_JWT_SECRET }}"
+            echo "✅ JWT secret found in GitHub secrets"
+          else
+            JWT_SECRET="dev-jwt-secret-key-change-for-production-use-strong-random-key"
+            echo "⚠️  Using default JWT secret"
+          fi
+
           # Apply to both namespaces
           for ns in platform analytics; do
+            echo ""
             echo "📦 Applying secrets to namespace: $ns"
 
+            # Create/update postgresql-secret
             kubectl create secret generic postgresql-secret -n $ns \
-              --from-literal=db-user=$(echo "$SECRET_JSON" | jq -r '.username') \
-              --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
+              --from-literal=db-user="$DB_USER" \
+              --from-literal=db-password="$DB_PASSWORD" \
               --dry-run=client -o yaml | kubectl apply -f - || {
               echo "❌ Failed to create/update postgresql-secret in $ns namespace"
               exit 1
             }
 
+            # Create/update backend-secret
             kubectl create secret generic backend-secret -n $ns \
               --from-literal=jwt-secret="$JWT_SECRET" \
               --dry-run=client -o yaml | kubectl apply -f - || {
@@ -312,14 +347,36 @@ jobs:
               exit 1
             }
 
-            echo "✅ Secrets applied to $ns namespace"
+            # Verify secrets were created correctly
+            echo "🔍 Verifying secrets in $ns namespace..."
+            if ! kubectl get secret postgresql-secret -n $ns >/dev/null 2>&1; then
+              echo "❌ Error: postgresql-secret not found in $ns namespace"
+              exit 1
+            fi
+            if ! kubectl get secret backend-secret -n $ns >/dev/null 2>&1; then
+              echo "❌ Error: backend-secret not found in $ns namespace"
+              exit 1
+            fi
+
+            # Verify secret keys exist
+            if ! kubectl get secret postgresql-secret -n $ns -o jsonpath='{.data.db-user}' >/dev/null 2>&1; then
+              echo "❌ Error: postgresql-secret missing 'db-user' key in $ns namespace"
+              exit 1
+            fi
+            if ! kubectl get secret postgresql-secret -n $ns -o jsonpath='{.data.db-password}' >/dev/null 2>&1; then
+              echo "❌ Error: postgresql-secret missing 'db-password' key in $ns namespace"
+              exit 1
+            fi
+
+            echo "✅ Secrets verified in $ns namespace"
           done
 
+          echo ""
           echo "🎉 Shared secrets setup completed for both namespaces"
 
   deploy:
     name: Deploy
-    needs: [build-backend, build-frontend, cluster-setup, setup-shared-secrets]
+    needs: [build-backend, build-frontend, cluster-setup, setup-secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
