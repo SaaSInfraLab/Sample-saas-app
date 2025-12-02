@@ -29,7 +29,8 @@ pool.on('connect', () => {
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected error on idle client', err);
+  const sanitizedError = sanitizeError(err);
+  console.error('Unexpected error on idle client', sanitizedError);
   isConnected = false;
 });
 
@@ -46,7 +47,8 @@ async function checkPoolHealth() {
     }
   } catch (error) {
     isConnected = false;
-    console.error('Pool health check failed:', error.message);
+    const sanitizedMessage = sanitizeError(error).message;
+    console.error('Pool health check failed:', sanitizedMessage);
     return false;
   }
 }
@@ -59,7 +61,8 @@ async function connectWithRetry(maxRetries = MAX_RETRIES) {
         return true;
       }
     } catch (error) {
-      console.error(`Connection attempt ${attempt} failed:`, error.message);
+      const sanitizedMessage = sanitizeError(error).message;
+      console.error(`Connection attempt ${attempt} failed:`, sanitizedMessage);
     }
     
     if (attempt < maxRetries) {
@@ -68,6 +71,25 @@ async function connectWithRetry(maxRetries = MAX_RETRIES) {
     }
   }
   return false;
+}
+
+function sanitizeError(error) {
+  if (!error) return error;
+  
+  const errorStr = error.toString();
+  const errorMessage = error.message || errorStr;
+  
+  const sanitized = {
+    message: errorMessage
+      .replace(/user\s+["'][^"']+["']/gi, 'user "[REDACTED]"')
+      .replace(/password\s+["'][^"']+["']/gi, 'password "[REDACTED]"')
+      .replace(/authentication failed for user\s+["'][^"']+["']/gi, 'authentication failed for user "[REDACTED]"')
+      .replace(/role\s+["'][^"']+["']/gi, 'role "[REDACTED]"'),
+    code: error.code,
+    name: error.name
+  };
+  
+  return sanitized;
 }
 
 function getTenantSchema(tenantId) {
