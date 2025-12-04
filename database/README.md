@@ -25,7 +25,7 @@ Migrations are located in `migrations/` and run automatically:
 ### When Migrations Run
 
 - **Docker Compose**: Automatically on PostgreSQL first startup
-- **Kubernetes**: Via `k8s/init-db-job.yaml` during deployment
+- **Kubernetes**: Via `init-db-job.yaml` in [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline) (deployed automatically by Flux CD)
 - **Manual**: Use `scripts/init-rds-database.sh` or `.ps1`
 
 ## 🔍 Verification

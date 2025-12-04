@@ -1,4 +1,4 @@
-name: CD - Build, Push, and Deploy
+name: CD - Build and Push Images
 
 on:
   workflow_run:
@@ -10,8 +10,6 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  TERRAFORM_STATE_BUCKET: saas-infra-lab-terraform-state
-  TERRAFORM_STATE_KEY: saas-infra-lab/dev/infrastructure/terraform.tfstate
 
 jobs:
   check-ci-status:
@@ -65,6 +63,7 @@ jobs:
       contents: read
     outputs:
       image: ${{ steps.image-info.outputs.image }}
+      image_tag: ${{ steps.image-info.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,8 +116,16 @@ jobs:
             IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
             echo "Constructed backend image: $IMAGE"
           fi
+          
+          # Extract tag
+          IMAGE_TAG=$(echo "$IMAGE" | cut -d':' -f2)
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" == "$IMAGE" ]; then
+            IMAGE_TAG="latest"
+          fi
+          
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
-          echo "✅ Backend image: $IMAGE"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Backend image: $IMAGE (tag: $IMAGE_TAG)"
 
   build-frontend:
     name: Build Frontend
@@ -129,6 +136,7 @@ jobs:
       contents: read
     outputs:
       image: ${{ steps.image-info.outputs.image }}
+      image_tag: ${{ steps.image-info.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -180,532 +188,123 @@ jobs:
             IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
             echo "Constructed frontend image: $IMAGE"
           fi
+          
+          # Extract tag
+          IMAGE_TAG=$(echo "$IMAGE" | cut -d':' -f2)
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" == "$IMAGE" ]; then
+            IMAGE_TAG="latest"
+          fi
+          
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
-          echo "✅ Frontend image: $IMAGE"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Frontend image: $IMAGE (tag: $IMAGE_TAG)"
 
-  cluster-setup:
-    name: Setup Cluster
-    needs: [check-ci-status]
+  update-gitops-manifest:
+    name: Update GitOps Manifest
+    needs: [build-backend, build-frontend]
     runs-on: ubuntu-latest
     permissions:
+      contents: write
       id-token: write
-      contents: read
-    outputs:
-      cluster_name: ${{ steps.eks-cluster.outputs.cluster_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout Gitops-pipeline
+        uses: actions/checkout@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: azure/setup-kubectl@v3
-      - name: Get cluster name
-        id: eks-cluster
+          repository: SaaSInfraLab/Gitops-pipeline
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops-repo
+      
+      - name: Install yq
         run: |
-          CLUSTER=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[0]' --output text)
-          echo "cluster_name=$CLUSTER" >> $GITHUB_OUTPUT
-      - name: Update kubeconfig
-        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
-      - name: Install Helm
-        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-      - name: Install CSI Driver
-        run: |
-          if ! kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io >/dev/null 2>&1; then
-            helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
-            helm repo update
-            helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
-              --namespace kube-system --set syncSecret.enabled=true --wait
-          fi
-          if ! kubectl get daemonset -n kube-system csi-secrets-store-provider-aws >/dev/null 2>&1; then
-            kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
-            kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=180s
-          fi
-
-  setup-secrets:
-    name: Setup Shared Secrets for Platform & Analytics
-    needs: [build-backend, build-frontend, cluster-setup]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: azure/setup-kubectl@v3
-
-      - name: Setup kubectl
-        run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
-
-      - name: Install jq
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Fetch and apply secrets to both namespaces
-        run: |
-          set -e
-          echo "🔐 Setting up shared secrets for platform and analytics namespaces..."
-
-          # Get RDS secret ARN from Terraform state (same approach as platform)
-          echo "📥 Downloading Terraform state from S3..."
-          aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate || {
-            echo "❌ Failed to download Terraform state"
-            exit 1
-          }
-
-          echo "✅ Terraform state downloaded successfully"
-          echo "📊 Extracting RDS secret ARN..."
-
-          SHARED_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate || echo "")
-
-          if [ -z "$SHARED_SECRET_ARN" ] || [ "$SHARED_SECRET_ARN" == "null" ] || [ "$SHARED_SECRET_ARN" == "" ]; then
-            echo "❌ Error: RDS secret ARN not found in Terraform state"
-            echo "Available outputs:"
-            jq '.outputs | keys' /tmp/terraform.tfstate || echo "Could not parse outputs"
-            exit 1
-          fi
-
-          echo "✅ Using RDS Secret ARN: ${SHARED_SECRET_ARN:0:50}..."
-
-          # Pull secret JSON from AWS Secrets Manager
-          SECRET_JSON=$(aws secretsmanager get-secret-value \
-            --secret-id "$SHARED_SECRET_ARN" \
-            --query SecretString --output text)
-
-          if [ -z "$SECRET_JSON" ] || [ "$SECRET_JSON" == "null" ]; then
-            echo "❌ Error: Failed to retrieve secret from AWS Secrets Manager"
-            exit 1
-          fi
-
-          echo "✅ Secret retrieved successfully"
-
-          # Validate required fields exist in secret JSON
-          if ! echo "$SECRET_JSON" | jq -e '.username' >/dev/null 2>&1; then
-            echo "❌ Error: Secret JSON missing 'username' field"
-            exit 1
-          fi
-          if ! echo "$SECRET_JSON" | jq -e '.password' >/dev/null 2>&1; then
-            echo "❌ Error: Secret JSON missing 'password' field"
-            exit 1
-          fi
-
-          # Extract values (ensure no newlines or special characters cause issues)
-          DB_USER=$(echo "$SECRET_JSON" | jq -r '.username' | tr -d '\n\r')
-          DB_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.password' | tr -d '\n\r')
-
-          # Validate extracted values are not empty
-          if [ -z "$DB_USER" ] || [ "$DB_USER" == "null" ]; then
-            echo "❌ Error: DB username is empty"
-            exit 1
-          fi
-          if [ -z "$DB_PASSWORD" ] || [ "$DB_PASSWORD" == "null" ]; then
-            echo "❌ Error: DB password is empty"
-            exit 1
-          fi
-
-          echo "✅ Database credentials extracted (username length: ${#DB_USER}, password length: ${#DB_PASSWORD})"
-
-          # Get JWT secret - try from secret JSON, GitHub secret, or use default
-          JWT_SECRET=""
-          if echo "$SECRET_JSON" | jq -e '.jwt' >/dev/null 2>&1; then
-            JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.jwt' | tr -d '\n\r')
-            echo "✅ JWT secret found in shared secret"
-          elif [ -n "${{ secrets.SHARED_JWT_SECRET }}" ] && [ "${{ secrets.SHARED_JWT_SECRET }}" != "" ]; then
-            JWT_SECRET="${{ secrets.SHARED_JWT_SECRET }}"
-            echo "✅ JWT secret found in GitHub secrets"
-          else
-            JWT_SECRET="dev-jwt-secret-key-change-for-production-use-strong-random-key"
-            echo "⚠️  Using default JWT secret"
-          fi
-
-          # Apply to both namespaces
-          for ns in platform analytics; do
-            echo ""
-            echo "📦 Applying secrets to namespace: $ns"
-
-            # Create/update postgresql-secret
-            kubectl create secret generic postgresql-secret -n $ns \
-              --from-literal=db-user="$DB_USER" \
-              --from-literal=db-password="$DB_PASSWORD" \
-              --dry-run=client -o yaml | kubectl apply -f - || {
-              echo "❌ Failed to create/update postgresql-secret in $ns namespace"
-              exit 1
-            }
-
-            # Create/update backend-secret
-            kubectl create secret generic backend-secret -n $ns \
-              --from-literal=jwt-secret="$JWT_SECRET" \
-              --dry-run=client -o yaml | kubectl apply -f - || {
-              echo "❌ Failed to create/update backend-secret in $ns namespace"
-              exit 1
-            }
-
-            # Verify secrets were created correctly
-            echo "🔍 Verifying secrets in $ns namespace..."
-            if ! kubectl get secret postgresql-secret -n $ns >/dev/null 2>&1; then
-              echo "❌ Error: postgresql-secret not found in $ns namespace"
-              exit 1
-            fi
-            if ! kubectl get secret backend-secret -n $ns >/dev/null 2>&1; then
-              echo "❌ Error: backend-secret not found in $ns namespace"
-              exit 1
-            fi
-
-            # Verify secret keys exist
-            if ! kubectl get secret postgresql-secret -n $ns -o jsonpath='{.data.db-user}' >/dev/null 2>&1; then
-              echo "❌ Error: postgresql-secret missing 'db-user' key in $ns namespace"
-              exit 1
-            fi
-            if ! kubectl get secret postgresql-secret -n $ns -o jsonpath='{.data.db-password}' >/dev/null 2>&1; then
-              echo "❌ Error: postgresql-secret missing 'db-password' key in $ns namespace"
-              exit 1
-            fi
-
-            # Decode and verify secret values match what we expect (for debugging)
-            SECRET_USER=$(kubectl get secret postgresql-secret -n $ns -o jsonpath='{.data.db-user}' | base64 -d)
-            SECRET_PASSWORD_LEN=$(kubectl get secret postgresql-secret -n $ns -o jsonpath='{.data.db-password}' | base64 -d | wc -c)
-            if [ "$SECRET_USER" != "$DB_USER" ]; then
-              echo "⚠️  Warning: Secret username doesn't match expected value"
-              echo "   Expected: ${DB_USER:0:10}... (length: ${#DB_USER})"
-              echo "   Actual: ${SECRET_USER:0:10}... (length: ${#SECRET_USER})"
-            else
-              echo "   ✅ Username matches expected value"
-            fi
-            echo "   Verified: db-user='${SECRET_USER:0:10}...' (length: ${#SECRET_USER}), db-password length: $SECRET_PASSWORD_LEN"
-            
-            # For analytics, compare with platform secret to ensure they match
-            if [ "$ns" == "analytics" ] && kubectl get secret postgresql-secret -n platform >/dev/null 2>&1; then
-              PLATFORM_USER=$(kubectl get secret postgresql-secret -n platform -o jsonpath='{.data.db-user}' | base64 -d)
-              if [ "$SECRET_USER" != "$PLATFORM_USER" ]; then
-                echo "⚠️  Warning: Analytics secret username doesn't match platform secret"
-                echo "   Platform: ${PLATFORM_USER:0:10}... (length: ${#PLATFORM_USER})"
-                echo "   Analytics: ${SECRET_USER:0:10}... (length: ${#SECRET_USER})"
-              else
-                echo "   ✅ Analytics secret username matches platform secret"
-              fi
-            fi
-
-            # Restart deployment to pick up new secret values (only for analytics, platform uses CSI)
-            if [ "$ns" == "analytics" ]; then
-              echo "🔄 Restarting backend deployment in $ns namespace to pick up new secrets..."
-              kubectl rollout restart deployment/backend -n $ns || {
-                echo "⚠️  Warning: Failed to restart deployment (may not exist yet)"
-              }
-              # Wait a moment for rollout to start
-              sleep 5
-            fi
-
-            echo "✅ Secrets verified in $ns namespace"
-          done
-
-          echo ""
-          echo "🎉 Shared secrets setup completed for both namespaces"
-
-  deploy:
-    name: Deploy
-    needs: [build-backend, build-frontend, cluster-setup, setup-secrets]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      id-token: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        namespace: [platform, analytics]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: azure/setup-kubectl@v3
-      - name: Setup kubectl
-        run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
-
-      - name: Install tools
-        timeout-minutes: 5
-        run: |
-          set -e
-          echo "🔧 Installing required tools..."
-          sudo apt-get update && sudo apt-get install -y jq || {
-            echo "❌ Failed to install jq"
-            exit 1
-          }
-          echo "✅ jq installed"
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 || {
-            echo "❌ Failed to download yq"
-            exit 1
-          }
-          sudo chmod +x /usr/local/bin/yq || {
-            echo "❌ Failed to make yq executable"
-            exit 1
-          }
-          echo "✅ yq installed"
-          # Verify tools are available
-          jq --version
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
           yq --version
-          echo "✅ All tools installed and verified"
-
-      - name: Initialize Database
-        if: matrix.namespace == 'platform'
-        timeout-minutes: 5
+      
+      - name: Update image tags in Kustomization files
+        working-directory: gitops-repo
         run: |
           set -e
-          echo "🗄️  Initializing database..."
           
-          # Check if init job already exists and completed successfully
-          if kubectl get job init-rds-database -n ${{ matrix.namespace }} >/dev/null 2>&1; then
-            JOB_STATUS=$(kubectl get job init-rds-database -n ${{ matrix.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' || echo "")
-            if [ "$JOB_STATUS" == "True" ]; then
-              echo "✅ Database initialization job already completed successfully"
-              echo "📋 Job logs:"
-              kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=10 || echo "Could not retrieve logs"
-              exit 0
-            else
-              echo "⚠️  Database initialization job exists but not completed, checking status..."
-              kubectl get job init-rds-database -n ${{ matrix.namespace }}
-              # Check if job is still running
-              JOB_ACTIVE=$(kubectl get job init-rds-database -n ${{ matrix.namespace }} -o jsonpath='{.status.active}' || echo "0")
-              if [ "$JOB_ACTIVE" != "0" ] && [ -n "$JOB_ACTIVE" ]; then
-                echo "⏳ Database initialization job is still running, waiting for completion..."
-                kubectl wait --for=condition=complete --timeout=5m job/init-rds-database -n ${{ matrix.namespace }} || {
-                  echo "❌ Database initialization job timed out or failed"
-                  kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=50
-                  exit 1
-                }
-                echo "✅ Database initialization job completed"
-                exit 0
-              else
-                echo "⚠️  Job exists but not active, deleting and recreating..."
-                kubectl delete job init-rds-database -n ${{ matrix.namespace }} || true
-              fi
-            fi
-          fi
-          
-          # Apply the init job
-          echo "📦 Applying database initialization job..."
-          kubectl apply -f k8s/init-db-job.yaml || {
-            echo "❌ Failed to apply init-db-job.yaml"
-            exit 1
-          }
-          
-          # Wait for job to complete
-          echo "⏳ Waiting for database initialization to complete (max 5 minutes)..."
-          if ! kubectl wait --for=condition=complete --timeout=5m job/init-rds-database -n ${{ matrix.namespace }}; then
-            echo "❌ Database initialization job failed or timed out"
-            echo ""
-            echo "=== Job Status ==="
-            kubectl get job init-rds-database -n ${{ matrix.namespace }}
-            echo ""
-            echo "=== Job Pod Status ==="
-            kubectl get pods -n ${{ matrix.namespace }} -l job-name=init-rds-database
-            echo ""
-            echo "=== Job Pod Logs ==="
-            kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=100 || echo "Could not retrieve logs"
-            exit 1
-          fi
-          
-          echo "✅ Database initialization completed successfully"
-          echo "📋 Final job logs:"
-          kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=20
-
-      - name: Remove ServiceMonitor if needed
-        timeout-minutes: 2
-        run: |
-          set +e  # Don't exit on error for this step
-          echo "🔍 Checking for ServiceMonitor CRD..."
-          if ! kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
-            echo "⚠️  ServiceMonitor CRD not found, removing references..."
-            SERVICEMONITOR_FILE="k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml"
-            KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
-            
-            # Remove servicemonitor.yaml file if it exists
-            if [ -f "$SERVICEMONITOR_FILE" ]; then
-              rm -f "$SERVICEMONITOR_FILE"
-              echo "✅ Removed servicemonitor.yaml file"
-            fi
-            
-            # Remove from kustomization.yaml if it exists
-            if [ -f "$KUSTOM_FILE" ]; then
-              # Try yq first, fallback to sed
-              if command -v yq >/dev/null 2>&1; then
-                yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' "$KUSTOM_FILE" 2>/dev/null && \
-                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using yq" || \
-                sed -i '/servicemonitor.yaml/d' "$KUSTOM_FILE" && \
-                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using sed"
-              else
-                sed -i '/servicemonitor.yaml/d' "$KUSTOM_FILE" && \
-                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using sed"
-              fi
-            fi
-            echo "✅ ServiceMonitor references removed"
-          else
-            echo "✅ ServiceMonitor CRD exists, keeping manifest"
-          fi
-          set -e  # Re-enable exit on error
-
-      - name: Update image tags
-        timeout-minutes: 5
-        run: |
-          set -e
           BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
           FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
+          BACKEND_TAG="${{ needs.build-backend.outputs.image_tag }}"
+          FRONTEND_TAG="${{ needs.build-frontend.outputs.image_tag }}"
           
-          echo "📦 Received image values:"
-          echo "  Backend: '$BACKEND_IMAGE'"
-          echo "  Frontend: '$FRONTEND_IMAGE'"
+          echo "📦 Updating GitOps manifests with new image tags..."
+          echo "  Backend: $BACKEND_IMAGE (tag: $BACKEND_TAG)"
+          echo "  Frontend: $FRONTEND_IMAGE (tag: $FRONTEND_TAG)"
           
-          # Fallback: construct image names if outputs are empty
-          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          # Extract image names (without tag)
+          BACKEND_NAME=$(echo "$BACKEND_IMAGE" | cut -d':' -f1)
+          FRONTEND_NAME=$(echo "$FRONTEND_IMAGE" | cut -d':' -f1)
           
-          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
-            echo "⚠️  Backend image output is empty, constructing from ECR..."
-            BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
-            echo "✅ Constructed backend image: $BACKEND_IMAGE"
+          # Update base kustomization.yaml
+          BASE_KUSTOM_FILE="apps/sample-saas-app/base/kustomization.yaml"
+          if [ -f "$BASE_KUSTOM_FILE" ]; then
+            echo "📝 Updating base kustomization.yaml..."
+            yq eval ".images[0].newName = \"$BACKEND_NAME\"" -i "$BASE_KUSTOM_FILE"
+            yq eval ".images[0].newTag = \"$BACKEND_TAG\"" -i "$BASE_KUSTOM_FILE"
+            yq eval ".images[1].newName = \"$FRONTEND_NAME\"" -i "$BASE_KUSTOM_FILE"
+            yq eval ".images[1].newTag = \"$FRONTEND_TAG\"" -i "$BASE_KUSTOM_FILE"
+            echo "✅ Base kustomization updated"
           fi
           
-          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
-            echo "⚠️  Frontend image output is empty, constructing from ECR..."
-            FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
-            echo "✅ Constructed frontend image: $FRONTEND_IMAGE"
+          # Update platform overlay
+          PLATFORM_KUSTOM_FILE="apps/sample-saas-app/overlays/platform/kustomization.yaml"
+          if [ -f "$PLATFORM_KUSTOM_FILE" ]; then
+            echo "📝 Updating platform overlay kustomization.yaml..."
+            yq eval ".images[0].newName = \"$BACKEND_NAME\"" -i "$PLATFORM_KUSTOM_FILE"
+            yq eval ".images[0].newTag = \"$BACKEND_TAG\"" -i "$PLATFORM_KUSTOM_FILE"
+            yq eval ".images[1].newName = \"$FRONTEND_NAME\"" -i "$PLATFORM_KUSTOM_FILE"
+            yq eval ".images[1].newTag = \"$FRONTEND_TAG\"" -i "$PLATFORM_KUSTOM_FILE"
+            echo "✅ Platform overlay updated"
           fi
           
-          # Final validation
-          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
-            echo "❌ Error: Backend image is still empty after fallback"
-            exit 1
+          # Update analytics overlay
+          ANALYTICS_KUSTOM_FILE="apps/sample-saas-app/overlays/analytics/kustomization.yaml"
+          if [ -f "$ANALYTICS_KUSTOM_FILE" ]; then
+            echo "📝 Updating analytics overlay kustomization.yaml..."
+            yq eval ".images[0].newName = \"$BACKEND_NAME\"" -i "$ANALYTICS_KUSTOM_FILE"
+            yq eval ".images[0].newTag = \"$BACKEND_TAG\"" -i "$ANALYTICS_KUSTOM_FILE"
+            yq eval ".images[1].newName = \"$FRONTEND_NAME\"" -i "$ANALYTICS_KUSTOM_FILE"
+            yq eval ".images[1].newTag = \"$FRONTEND_TAG\"" -i "$ANALYTICS_KUSTOM_FILE"
+            echo "✅ Analytics overlay updated"
           fi
           
-          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
-            echo "❌ Error: Frontend image is still empty after fallback"
-            exit 1
-          fi
-          
-          # Extract image name and tag from full image path
-          BACKEND_NAME=$(echo "$BACKEND_IMAGE" | cut -d: -f1)
-          BACKEND_TAG=$(echo "$BACKEND_IMAGE" | cut -d: -f2)
-          FRONTEND_NAME=$(echo "$FRONTEND_IMAGE" | cut -d: -f1)
-          FRONTEND_TAG=$(echo "$FRONTEND_IMAGE" | cut -d: -f2)
-          
-          echo "📊 Parsed images:"
-          echo "  Backend: $BACKEND_NAME:$BACKEND_TAG"
-          echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
-          
-          # Update kustomization.yaml with the correct image tags
-          KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
-          if [ -f "$KUSTOM_FILE" ]; then
-            echo "📝 Updating kustomization.yaml with new image tags..."
-            # Update backend image (yq v4 syntax)
-            yq -i ".images[0].newName = \"$BACKEND_NAME\"" "$KUSTOM_FILE" || {
-              echo "❌ Failed to update backend image name"
-              exit 1
-            }
-            yq -i ".images[0].newTag = \"$BACKEND_TAG\"" "$KUSTOM_FILE" || {
-              echo "❌ Failed to update backend image tag"
-              exit 1
-            }
-            # Update frontend image
-            yq -i ".images[1].newName = \"$FRONTEND_NAME\"" "$KUSTOM_FILE" || {
-              echo "❌ Failed to update frontend image name"
-              exit 1
-            }
-            yq -i ".images[1].newTag = \"$FRONTEND_TAG\"" "$KUSTOM_FILE" || {
-              echo "❌ Failed to update frontend image tag"
-              exit 1
-            }
-            echo "✅ Kustomization updated successfully"
-          else
-            echo "⚠️  Warning: kustomization.yaml not found, updating deployment files directly"
-            # Fallback: update deployment files directly
-            if [ -f "k8s/namespace-${{ matrix.namespace }}/backend-deployment.yaml" ]; then
-              sed -i "s|image: task-management-backend.*|image: $BACKEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/backend-deployment.yaml"
-            fi
-            if [ -f "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml" ]; then
-              sed -i "s|image: task-management-frontend.*|image: $FRONTEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml"
-            fi
-          fi
-          echo "✅ Image tags updated successfully"
-
-      - name: Deploy
-        timeout-minutes: 20
+          echo "✅ All kustomization files updated"
+      
+      - name: Commit and push to GitOps repo
+        working-directory: gitops-repo
         run: |
           set -e
-          echo "🚀 Deploying to ${{ matrix.namespace }} namespace..."
-          kubectl apply -k k8s/namespace-${{ matrix.namespace }} || {
-            echo "❌ Failed to apply kustomization"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if there are any changes
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "ℹ️  No changes to commit (images may already be up to date)"
+            exit 0
+          fi
+          
+          # Show what will be committed
+          echo "📋 Changes to be committed:"
+          git diff --stat
+          
+          # Commit changes
+          COMMIT_MSG="chore: update sample-saas-app images to ${{ needs.build-backend.outputs.image_tag }}"
+          git add apps/sample-saas-app/
+          git commit -m "$COMMIT_MSG" || {
+            echo "⚠️  No changes to commit (may already be up to date)"
+            exit 0
+          }
+          
+          # Push to main branch
+          git push origin main || {
+            echo "❌ Failed to push to GitOps repo"
             exit 1
           }
           
-          echo "⏳ Waiting 10 seconds for pods to be created..."
-          sleep 10
-          
-          echo "📦 Checking pod status..."
-          kubectl get pods -n ${{ matrix.namespace }} -o wide
-          
-          echo "⏳ Waiting for backend deployment..."
-          # Increased timeout to 10m to account for database connection timeouts and health checks
-          # Database connection: 15s timeout, readiness probe: 20s initial + up to 3 failures (10s each)
-          if ! kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=10m; then
-            echo "❌ Backend deployment failed or timed out"
-            echo ""
-            echo "=== Backend Deployment Details ==="
-            kubectl describe deployment backend -n ${{ matrix.namespace }}
-            echo ""
-            echo "=== Backend Pod Status ==="
-            kubectl get pods -n ${{ matrix.namespace }} -l app=backend
-            echo ""
-            echo "=== Backend Pod Events ==="
-            for pod in $(kubectl get pods -n ${{ matrix.namespace }} -l app=backend -o jsonpath='{.items[*].metadata.name}'); do
-              echo "Pod: $pod"
-              kubectl describe pod "$pod" -n ${{ matrix.namespace }} | tail -20
-              echo ""
-              echo "Pod logs:"
-              kubectl logs "$pod" -n ${{ matrix.namespace }} --tail=50 || echo "Could not retrieve logs"
-              echo "---"
-            done
-            exit 1
-          fi
-          
-          echo "⏳ Waiting for frontend deployment..."
-          # Increased timeout to 10m for consistency and to handle slow image pulls
-          if ! kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=10m; then
-            echo "❌ Frontend deployment failed or timed out"
-            echo ""
-            echo "=== Frontend Deployment Details ==="
-            kubectl describe deployment frontend -n ${{ matrix.namespace }}
-            echo ""
-            echo "=== Frontend Pod Status ==="
-            kubectl get pods -n ${{ matrix.namespace }} -l app=frontend
-            echo ""
-            echo "=== Frontend Pod Events ==="
-            for pod in $(kubectl get pods -n ${{ matrix.namespace }} -l app=frontend -o jsonpath='{.items[*].metadata.name}'); do
-              echo "Pod: $pod"
-              kubectl describe pod "$pod" -n ${{ matrix.namespace }} | tail -20
-              echo ""
-              echo "Pod logs:"
-              kubectl logs "$pod" -n ${{ matrix.namespace }} --tail=50 || echo "Could not retrieve logs"
-              echo "---"
-            done
-            exit 1
-          fi
-          
-          echo "✅ Deployment completed successfully"
-
-      - name: Verify
-        timeout-minutes: 2
-        run: |
-          set -e
-          echo "🔍 Verifying deployment..."
-          kubectl get pods -n ${{ matrix.namespace }}
-          kubectl get services -n ${{ matrix.namespace }}
-          echo "✅ Verification complete"
+          echo "✅ Successfully updated GitOps repository"
+          echo "   Commit: $COMMIT_MSG"
+          echo "   Flux will automatically detect and deploy the changes"

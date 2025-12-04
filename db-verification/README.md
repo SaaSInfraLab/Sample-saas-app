@@ -2,6 +2,8 @@
 
 Connect to and verify the RDS database.
 
+> **Note:** This guide is for operational tasks (database verification, debugging). For deployment, see the [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline) repository.
+
 ## Get Connection Details (Decoded)
 
 ### Platform Namespace

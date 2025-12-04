@@ -1,4 +1,13 @@
 #!/bin/bash
+# =============================================================================
+# Setup AWS Secrets Manager IAM Role
+# =============================================================================
+# This script creates IAM role and policy for Secrets Manager CSI Driver access.
+#
+# NOTE: For production deployments, IAM setup is typically managed via Terraform
+# in the cloudnative-saas-eks repository. This script is for manual setup or
+# development environments.
+# =============================================================================
 
 # Exit on error
 set -e

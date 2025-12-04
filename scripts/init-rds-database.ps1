@@ -1,4 +1,18 @@
-# Initialize RDS PostgreSQL Database
+# =============================================================================
+# Initialize RDS PostgreSQL Database (PowerShell)
+# =============================================================================
+# This script initializes the RDS database with schemas and tables.
+#
+# NOTE: In production, database initialization is handled automatically via:
+# - Kubernetes Job: Gitops-pipeline/apps/sample-saas-app/base/init-db-job.yaml
+# - Deployed automatically by Flux CD
+#
+# This script is useful for:
+# - Initial setup before GitOps deployment
+# - Manual database initialization
+# - Development environments
+# =============================================================================
+
 param(
     [string]$RdsEndpoint = "",
     [string]$DbName = "taskdb",

@@ -121,5 +121,6 @@ docker-compose exec postgres psql -U taskuser -d taskdb -f /docker-entrypoint-in
 ## 📚 Next Steps
 
 - [README.md](README.md) - Full documentation
-- [CI_CD_SETUP.md](CI_CD_SETUP.md) - Kubernetes deployment
+- [CI_CD_SETUP.md](CI_CD_SETUP.md) - CI/CD pipeline configuration
 - [database/README.md](database/README.md) - Database details
+- [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline) - GitOps deployment configuration

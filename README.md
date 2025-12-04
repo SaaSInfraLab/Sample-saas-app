@@ -16,14 +16,16 @@ docker-compose up -d
 
 See [QUICK_START.md](QUICK_START.md) for detailed local setup.
 
-### Kubernetes Deployment
-```bash
-# Deploy to platform namespace
-kubectl apply -k k8s/namespace-platform
+### Deployment
 
-# Deploy to analytics namespace
-kubectl apply -k k8s/namespace-analytics
-```
+Deployment is handled automatically via **GitOps**:
+
+1. Push your code to this repository
+2. CI pipeline runs tests and builds Docker images
+3. CD pipeline pushes images to ECR and updates the GitOps repository
+4. Flux CD automatically deploys to the cluster
+
+**Note:** Kubernetes manifests are managed in the [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline) repository.
 
 ## 📋 Features
 
@@ -77,21 +79,24 @@ Sample-saas-app/
 │   └── Dockerfile
 ├── database/            # SQL migrations
 │   └── migrations/     # Schema definitions
-├── k8s/                 # Kubernetes manifests
-│   ├── namespace-platform/
-│   └── namespace-analytics/
 ├── scripts/             # Utility scripts
-└── db-verification/     # DB connection tools
+├── db-verification/     # DB connection tools
+└── k8s/                 # ⚠️ DEPRECATED - See k8s/README.md
 ```
 
 ## 🔧 Prerequisites
 
-- **AWS Account** with EKS access
-- **Terraform** >= 1.0
-- **kubectl** configured for EKS
-- **Docker** & Docker Compose (local dev)
-- **Node.js** >= 18.0.0 (local dev)
-- **AWS CLI** configured
+### For Local Development
+- **Docker** & Docker Compose
+- **Node.js** >= 18.0.0
+- **Git** (for version control)
+
+### For Deployment
+Deployment is fully automated via GitOps. No local Kubernetes tools required!
+
+- **GitHub Actions** - Automatically builds and deploys
+- **Flux CD** - Manages Kubernetes deployments (configured in [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline))
+- **AWS EKS** - Cluster managed via [cloudnative-saas-eks](https://github.com/SaaSInfraLab/cloudnative-saas-eks)
 
 ## 📚 Documentation
 
@@ -139,20 +144,22 @@ Migrations run automatically on deployment. See [database/README.md](database/RE
 
 ## 🚢 Deployment
 
-### Infrastructure (Terraform)
-```bash
-cd cloudnative-saas-eks/examples/dev-environment/infrastructure
-terraform init && terraform apply
-```
+### GitOps Deployment
 
-### Tenants
-```bash
-cd ../tenants
-terraform init && terraform apply
-```
+Deployment is fully automated via **GitOps**:
 
-### CI/CD
-Automated via GitHub Actions. See [CI_CD_SETUP.md](CI_CD_SETUP.md).
+1. **Push code** → CI runs tests
+2. **Build images** → CD builds and pushes to ECR
+3. **Update GitOps** → CD updates Gitops-pipeline repository
+4. **Auto-deploy** → Flux CD detects changes and deploys
+
+See [CI_CD_SETUP.md](CI_CD_SETUP.md) for CI/CD configuration.
+
+### Infrastructure
+
+Infrastructure is managed separately:
+- **EKS Cluster**: [cloudnative-saas-eks](https://github.com/SaaSInfraLab/cloudnative-saas-eks)
+- **GitOps Config**: [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline)
 
 ## 🛠️ Technology Stack
 

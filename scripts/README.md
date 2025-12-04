@@ -46,39 +46,40 @@ Creates IAM role and policy for Secrets Manager CSI Driver access.
 - Attaches required policies
 - Configures trust relationship
 
-**`deploy-secrets-manager.sh`**
+**`deploy-secrets-manager.sh`** ⚠️ **DEPRECATED**
 
-Deploys AWS Secrets Manager CSI Driver to Kubernetes cluster.
+> **Note:** This script is deprecated. Secrets Manager configuration is now managed via GitOps in the [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline) repository.
 
-**Usage:**
-```bash
-./scripts/deploy-secrets-manager.sh
-```
-
-**What it does:**
-- Installs Secrets Store CSI Driver
-- Installs AWS Provider for CSI Driver
-- Enables secret synchronization
+The AWS Secrets Manager CSI Driver and configuration are now deployed automatically by Flux CD. See the script file for migration instructions.
 
 ## 🔄 Complete Setup Workflow
 
+### For Local Development
 ```bash
-# 1. Initialize database
+# Initialize database (if needed)
 ./scripts/init-rds-database.sh
-
-# 2. Setup IAM for Secrets Manager
-./scripts/setup-secrets-manager-iam.sh
-
-# 3. Deploy Secrets Manager CSI Driver
-./scripts/deploy-secrets-manager.sh
 ```
+
+### For Production Deployment
+Deployment is handled automatically via GitOps:
+1. Infrastructure setup: [cloudnative-saas-eks](https://github.com/SaaSInfraLab/cloudnative-saas-eks)
+2. GitOps configuration: [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline)
+3. Application deployment: Automatic via CI/CD (this repository)
+
+**Note:** Secrets Manager and IAM setup are now managed via Terraform and GitOps. Manual scripts are only for local development.
 
 ## ⚙️ Requirements
 
-- `kubectl` configured for EKS cluster
+### For Database Scripts
 - AWS CLI configured with credentials
 - Terraform outputs available (for database script)
 - PostgreSQL client or Docker (for database script)
+
+### For Deployment
+- No local requirements! Deployment is fully automated via:
+  - GitHub Actions (CI/CD)
+  - Flux CD (GitOps)
+  - Terraform (Infrastructure)
 
 ## 📝 Notes
 

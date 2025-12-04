@@ -2,8 +2,16 @@
 # =============================================================================
 # Initialize RDS PostgreSQL Database
 # =============================================================================
-# This script initializes the RDS database with schemas and tables
-# Run this after RDS is created and before deploying applications
+# This script initializes the RDS database with schemas and tables.
+#
+# NOTE: In production, database initialization is handled automatically via:
+# - Kubernetes Job: Gitops-pipeline/apps/sample-saas-app/base/init-db-job.yaml
+# - Deployed automatically by Flux CD
+#
+# This script is useful for:
+# - Initial setup before GitOps deployment
+# - Manual database initialization
+# - Development environments
 # =============================================================================
 
 set -e
