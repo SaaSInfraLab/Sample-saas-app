@@ -241,7 +241,7 @@ jobs:
           repository: SaaSInfraLab/Gitops-pipeline
           token: ${{ secrets.GITOPS_REPO_TOKEN }}
           path: gitops-repo
-          ref: develop
+          ref: testing
       
       - name: Install yq
         run: |
@@ -475,8 +475,8 @@ jobs:
             exit 0
           }
           
-          # Push to develop branch (Argo CD is configured to watch develop)
-          TARGET_BRANCH="develop"
+          # Push to testing branch (Argo CD is configured to watch testing)
+          TARGET_BRANCH="testing"
           echo ""
           echo "📤 Pushing to GitOps repo branch: $TARGET_BRANCH"
           git push origin "$TARGET_BRANCH" || {
