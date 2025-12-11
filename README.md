@@ -81,7 +81,7 @@ Sample-saas-app/
 │   └── migrations/     # Schema definitions
 ├── scripts/             # Utility scripts
 ├── db-verification/     # DB connection tools
-└── k8s/                 # ⚠️ DEPRECATED - See k8s/README.md
+└── k8s/                 # DEPRECATED
 ```
 
 ## 🔧 Prerequisites

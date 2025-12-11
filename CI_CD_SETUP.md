@@ -5,214 +5,136 @@ Automated CI/CD pipeline with GitOps deployment to AWS EKS using GitHub Actions.
 ## 📋 Prerequisites
 
 - EKS cluster and ECR repositories deployed via Terraform
-- GitHub Actions IAM role with permissions for:
-  - ECR (push/pull images)
-- Flux CD installed and configured on EKS cluster
+- ArgoCD installed on EKS cluster
 - GitOps repository ([Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline))
 
-## ⚙️ Configuration
+## 🔐 Setup: GitHub Actions OIDC → AWS
 
-### GitHub Secrets
+### 1. Configure OIDC Provider (one-time)
 
-Configure these secrets in your GitHub repository (Settings → Secrets and variables → Actions):
+- Go to **IAM → Identity providers**
+- If `token.actions.githubusercontent.com` doesn't exist:
+  - Click **Add provider**
+  - Type: **OpenID Connect**
+  - Provider URL: `https://token.actions.githubusercontent.com`
+  - Audience: `sts.amazonaws.com`
 
-#### Required Secrets
+### 2. Create IAM Role
 
-| Secret Name | Description | Example Value | How to Get |
-|------------|-------------|---------------|------------|
-| `AWS_ROLE_ARN` | IAM role ARN for GitHub Actions (ECR and S3 access) | `arn:aws:iam::821368347884:role/github-actions-ecr-eks-role` | From Terraform outputs or AWS Console |
-| `ECR_BACKEND_REPO` | ECR repository name for backend (just the name, not full path) | `saas-infra-lab-dev-backend` | From Terraform outputs: `terraform output ecr_backend_repository_name` |
-| `ECR_FRONTEND_REPO` | ECR repository name for frontend (just the name, not full path) | `saas-infra-lab-dev-frontend` | From Terraform outputs: `terraform output ecr_frontend_repository_name` |
-| `GITOPS_REPO_TOKEN` | Personal Access Token (PAT) with `repo` scope for Gitops-pipeline repository | `ghp_xxxxxxxxxxxx` | Create in GitHub Settings → Developer settings → Personal access tokens |
+- **IAM → Roles → Create role**
+- Select **Web identity**
+- Provider: `token.actions.githubusercontent.com`
+- Audience: `sts.amazonaws.com`
+- Condition:
+  - Key: `token.actions.githubusercontent.com:sub`
+  - Operator: `StringLike`
+  - Value: `repo:SaaSInfraLab/Sample-saas-app:*`
 
-#### Getting ECR Repository Names from Terraform
+### 3. Attach Policies
 
+Create and attach these policies:
+
+**ECR Policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "ecr:GetAuthorizationToken",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+      "ecr:PutImage",
+      "ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:CompleteLayerUpload"
+    ],
+    "Resource": "*"
+  }]
+}
+```
+
+**EKS Policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["eks:DescribeCluster", "eks:ListClusters"],
+    "Resource": "*"
+  }]
+}
+```
+
+- Role name: `github-actions-ecr-eks-role`
+- Copy the Role ARN
+
+### 4. Add GitHub Secrets
+
+**Settings → Secrets and variables → Actions:**
+
+| Secret | Value |
+|--------|-------|
+| `AWS_ROLE_ARN` | `arn:aws:iam::821368347884:role/github-actions-ecr-eks-role` |
+| `ECR_BACKEND_REPO` | `saas-infra-lab-dev-backend` |
+| `ECR_FRONTEND_REPO` | `saas-infra-lab-dev-frontend` |
+| `GITOPS_REPO_TOKEN` | GitHub PAT with `repo` scope |
+
+**Get ECR repo names:**
 ```bash
-# Navigate to infrastructure directory
 cd cloudnative-saas-eks/examples/dev-environment/infrastructure
-
-# Get ECR repository names
 terraform output ecr_backend_repository_name
 terraform output ecr_frontend_repository_name
-
-# Or get full URLs and extract the name
-terraform output ecr_backend_repository_url
-terraform output ecr_frontend_repository_url
 ```
 
-#### Creating GITOPS_REPO_TOKEN
-
-1. Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Click "Generate new token (classic)"
-3. Give it a name (e.g., "GitOps Pipeline Access")
-4. Select scope: `repo` (full control of private repositories)
-5. Click "Generate token"
-6. Copy the token immediately (you won't see it again)
-7. Add as secret `GITOPS_REPO_TOKEN` in the Sample-saas-app repository
-
-**Note:** The token needs write access to the `Gitops-pipeline` repository. If the repository is in a different organization, ensure the token has access to that organization's repositories.
-
-## 🔄 Workflows
-
-### CI Pipeline (`ci.yml`)
-
-**Triggers:**
-- Push to `main` or `develop`
-- Pull requests
-
-**Jobs:**
-- Backend tests
-- Frontend tests
-- Code linting
-
-**Duration:** ~5-8 minutes
-
-### CD Pipeline (`cd.yml`)
-
-**Triggers:**
-- CI workflow success
-- Manual dispatch
-- Tag push (`v*`)
-
-**Jobs:**
-1. **Check CI Status** - Verify CI passed
-2. **Build Backend** - Build and push backend Docker image to ECR
-3. **Build Frontend** - Build and push frontend Docker image to ECR
-4. **Update GitOps Manifest** - Update Gitops-pipeline repository with new image tags
-
-**Duration:** ~5-10 minutes
-
-## 🔄 GitOps Flow
+## 🔄 How It Works
 
 ```
-Developer pushes code
-    ↓
-CI Pipeline (tests)
-    ↓
-CD Pipeline:
-  1. Build Docker images
-  2. Push to ECR
-  3. Update Gitops-pipeline Git repo
-    ↓
-Flux CD detects Git change
-    ↓
-Automatic deployment to cluster
+Push code → CI (tests) → CD (build & push images) → Update GitOps repo → ArgoCD deploys
 ```
 
-## 🚀 Deployment Process
+## 🚀 Deployment
 
-### Automatic Deployment
+**Automatic:**
+- Push to `main` or `develop` → CI runs → CD runs → ArgoCD deploys
 
-1. **Push code** to `main` or `develop` branch
-2. **CI runs** - Tests and validation
-3. **CD runs** - Builds images and updates GitOps repo
-4. **Flux deploys** - Automatically syncs and deploys to cluster
+**Manual:**
+- Actions tab → "CD - Build and Push Images" → Run workflow
 
-### Manual Deployment
+**Tag-based:**
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
 
-1. Go to Actions tab
-2. Select "CD - Build and Push Images" workflow
-3. Click "Run workflow"
-4. Select branch and run
-
-### Tag-based Deployment
+## 🔍 Verify Deployment
 
 ```bash
-# Create and push a tag
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-This triggers the CD pipeline automatically.
-
-## 📝 Image Tagging
-
-Images are tagged with:
-- **SHA tag**: `sha-<commit-sha>` (unique per commit)
-- **Latest tag**: `latest` (only on main branch)
-- **Branch tag**: `<branch-name>` (for feature branches)
-
-The CD pipeline automatically extracts the tag and updates the GitOps repository.
-
-## 🔍 Monitoring Deployment
-
-### Check CI/CD Status
-
-```bash
-# View workflow runs
+# Check CI/CD status
 # GitHub Actions tab → Workflow runs
-```
 
-### Check Flux Sync Status
+# Check ArgoCD sync
+kubectl get applications -n argocd
+argocd app get sample-saas-app
 
-```bash
-# After CD pipeline completes, check Flux
-kubectl get kustomizations -n flux-system
-
-# View sync events
-flux get kustomizations sample-saas-app
-```
-
-### Verify Deployment
-
-```bash
 # Check pods
 kubectl get pods -n platform
 kubectl get pods -n analytics
-
-# Check services
-kubectl get svc -n platform
-kubectl get svc -n analytics
 ```
 
 ## 🛠️ Troubleshooting
 
-### CD Pipeline Fails to Update GitOps Repo
+**CD fails to update GitOps:**
+- Check `GITOPS_REPO_TOKEN` has `repo` scope
+- Verify token has access to Gitops-pipeline repo
 
-1. **Check GITOPS_REPO_TOKEN**:
-   - Verify token has `repo` scope
-   - Verify token has access to Gitops-pipeline repository
-   - Check if token is expired
+**Images not deploying:**
+- Check ArgoCD sync: `argocd app get sample-saas-app`
+- Check ArgoCD applications: `kubectl get applications -n argocd`
+- Check deployments: `kubectl get deployments -n platform`
+- View workflow logs in GitHub Actions
 
-2. **Check GitOps Repo Access**:
-   ```bash
-   # Test token manually
-   curl -H "Authorization: token YOUR_TOKEN" https://api.github.com/repos/SaaSInfraLab/Gitops-pipeline
-   ```
+## 📚 Resources
 
-3. **Check Workflow Logs**:
-   - View "Update GitOps Manifest" job logs
-   - Look for Git authentication errors
-
-### Images Not Deploying
-
-1. **Check Flux Sync**:
-   ```bash
-   flux get kustomizations
-   flux events --kind Kustomization
-   ```
-
-2. **Check Image Tags**:
-   ```bash
-   # Verify tags in GitOps repo
-   git log --oneline apps/sample-saas-app/
-   ```
-
-3. **Check Cluster Resources**:
-   ```bash
-   kubectl get deployments -n platform
-   kubectl describe deployment backend -n platform
-   ```
-
-## 📚 Related Documentation
-
-- [Flux GitOps Pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline)
-- [GitOps Integration Guide](https://github.com/SaaSInfraLab/Gitops-pipeline/blob/main/docs/integration-guide.md)
+- [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline)
 - [Sample-saas-app README](README.md)
-
-## 🔐 Security Notes
-
-- **GITOPS_REPO_TOKEN**: Store as GitHub secret, never commit to repository
-- **AWS_ROLE_ARN**: Use IAM roles with least privilege
-- **Image Tags**: Use SHA-based tags for traceability
-- **Git Commits**: All GitOps updates are auditable via Git history
